@@ -18,7 +18,8 @@ GROUP = 'Custom_DIYWorkbenchTools'
 PREFS = 'User parameter:BaseApp/Preferences/DIYWorkbenchTools'
 GLOBAL_PREFS = 'User parameter:BaseApp/Workbench/Global/Toolbar'
 VISIBILITY_PREFS = 'User parameter:BaseApp/MainWindow/Toolbars'
-COMMANDS = ('DIY_AddWorkbenchParts', 'DIY_PlaceEdit', 'DIY_JoinCorners',
+COMMANDS = ('DIY_AddWorkbenchParts', 'DIY_MovePart', 'DIY_RotatePart',
+            'DIY_PlaceEdit', 'DIY_JoinCorners',
             'DIY_StandUpright', 'DIY_RotateX', 'DIY_RotateY', 'DIY_RotateZ')
 _controller = None
 _start_attempts = 0
@@ -36,6 +37,7 @@ class ToolbarController:
         self.menu_action = self.menu.menuAction()
         self.tools_action = None
         self.main_menu_actions = []
+        self.edit_actions = []
         self.toggle = QtGui.QAction('Show DIY tools', main)
         self.toggle.setCheckable(True)
         self.toggle.setChecked(self.enabled())
@@ -90,7 +92,20 @@ class ToolbarController:
                 self.tools_action = action
                 if self.menu_action not in tools.actions():
                     tools.addMenu(self.menu)
-                return
+            if tools and (tools.objectName() == 'Std_EditMenu'
+                          or action.objectName() == 'Std_EditMenu'
+                          or action.text().replace('&', '') == 'Edit'):
+                # Reuse the native command actions so availability, tooltips,
+                # icons and shortcuts match the toolbar in every workbench.
+                self.edit_actions = []
+                for command_name in ('DIY_MovePart', 'DIY_RotatePart'):
+                    command = Gui.Command.get(command_name)
+                    if command is None:
+                        continue
+                    for command_action in command.getAction():
+                        self.edit_actions.append(command_action)
+                        if command_action not in tools.actions():
+                            tools.addAction(command_action)
 
     def relocate(self):
         self.restore_menu()
@@ -129,7 +144,7 @@ def start():
             App.Console.PrintError('DIY tools: GUI startup timed out. Restart FreeCAD or call WorkbenchToolbarLayout.start().\n')
         return
     for module in ('PartGui', 'WorkbenchPartsCommand', 'WorkbenchPlacement',
-                   'WorkbenchPlaceEdit'):
+                   'WorkbenchPlaceEdit', 'WorkbenchMoveRotate'):
         importlib.import_module(module)
     _controller = ToolbarController(main)
     _controller.install()

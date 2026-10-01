@@ -2,8 +2,8 @@
 <package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
   <name>FreeCAD DIY tools</name>
   <description>Independent timber and plywood creation, cut sizing, corner joining and face placement tools.</description>
-  <version>0.2.0</version>
-  <date>2026-10-01</date>
+  <version>0.3.0</version>
+  <date>2026-10-02</date>
   <maintainer>KSEGIT</maintainer>
   <license>UNLICENSED</license>
   <url type="repository" branch="main">https://github.com/KSEGIT/freecad-diy-tools</url>

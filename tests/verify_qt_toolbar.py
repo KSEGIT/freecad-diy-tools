@@ -3,7 +3,7 @@ from pathlib import Path
 import sys, types, importlib.util, unittest
 sys.path.insert(0,'/Applications/FreeCAD.app/Contents/Resources/lib')
 import FreeCAD
-from PySide import QtCore, QtWidgets
+from PySide import QtCore, QtWidgets, QtGui
 application=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 class Params:
     def __init__(self): self.values={}; self.groups={}
@@ -22,9 +22,12 @@ class ToolbarTests(unittest.TestCase):
         self.vendor=QtWidgets.QToolBar('Vendor',self.main); self.vendor.setObjectName('Vendor'); self.main.addToolBar(self.vendor)
         self.main.menuBar().setNativeMenuBar(False)
         self.menu=self.main.menuBar().addMenu('Tools'); self.menu.setObjectName('Std_ToolsMenu')
+        self.edit=self.main.menuBar().addMenu('Edit'); self.edit.setObjectName('Std_EditMenu')
+        self.command_actions={}; self.invoked=[]
         self.active='PartWorkbench'; self.reloads=0
         gui=types.ModuleType('FreeCADGui'); gui.getMainWindow=lambda:self.main
         gui.activeWorkbench=lambda:types.SimpleNamespace(reloadActive=self.reload)
+        gui.Command=types.SimpleNamespace(get=lambda name:types.SimpleNamespace(getAction=lambda:self.command_actions.get(name,[])))
         self.old_app=sys.modules['FreeCAD']; self.old_gui=sys.modules.get('FreeCADGui')
         sys.modules['FreeCAD']=types.SimpleNamespace(ParamGet=self.param,Console=types.SimpleNamespace(PrintError=print))
         sys.modules['FreeCADGui']=gui
@@ -37,6 +40,12 @@ class ToolbarTests(unittest.TestCase):
         self.toolbar=self.main.findChild(QtWidgets.QToolBar,'DIY tools')
         if self.toolbar is None:
             self.toolbar=QtWidgets.QToolBar('DIY tools',self.main); self.toolbar.setObjectName('DIY tools'); self.main.addToolBar(self.toolbar)
+        for command in self.module.COMMANDS:
+            if command not in self.command_actions:
+                action=QtGui.QAction(command,self.main); action.setObjectName(command)
+                action.triggered.connect(lambda checked=False,c=command:self.invoked.append(c))
+                self.command_actions[command]=[action]
+                self.toolbar.addAction(action)
         self.toolbar.show()
     def ready(self):
         self.assertTrue(hasattr(self.module,'ToolbarController'),'missing universal toolbar controller')
@@ -46,7 +55,7 @@ class ToolbarTests(unittest.TestCase):
         sys.modules['FreeCAD']=self.old_app
         if self.old_gui is None: sys.modules.pop('FreeCADGui',None)
         else: sys.modules['FreeCADGui']=self.old_gui
-    def test_registers_seven_native_global_commands_without_vendor_changes(self):
+    def test_registers_native_global_commands_without_vendor_changes(self):
         self.ready(); group=self.param(self.module.GLOBAL_PREFS).GetGroup(self.module.GROUP)
         self.assertEqual(group.GetString('Name'),'DIY tools'); self.assertTrue(group.GetBool('Active'))
         self.assertEqual(set(group.values)-{'Name','Active'},set(self.module.COMMANDS))
@@ -93,4 +102,25 @@ class ToolbarTests(unittest.TestCase):
         self.toolbar.hide(); self.active='NoneWorkbench'
         self.main.workbenchActivated.emit(self.active); application.processEvents()
         self.assertTrue(self.toolbar.isVisible())
+    def test_move_rotate_share_toolbar_actions_with_edit_menu(self):
+        self.ready()
+        for command in ('DIY_MovePart','DIY_RotatePart'):
+            self.assertIn(command,self.module.COMMANDS)
+            action=self.command_actions[command][0]
+            self.assertIn(action,self.toolbar.actions())
+            self.assertIn(action,self.edit.actions())
+            action.trigger()
+        self.assertEqual(self.invoked,['DIY_MovePart','DIY_RotatePart'])
+        self.controller.relocate()
+        for command in ('DIY_MovePart','DIY_RotatePart'):
+            self.assertEqual(self.edit.actions().count(self.command_actions[command][0]),1)
+    def test_edit_menu_recreation_preserves_move_rotate(self):
+        self.ready()
+        self.main.menuBar().removeAction(self.edit.menuAction()); self.edit.deleteLater()
+        application.processEvents()
+        menu=self.main.menuBar().addMenu('Edit'); menu.setObjectName('Std_EditMenu')
+        self.main.workbenchActivated.emit('DraftWorkbench'); application.processEvents()
+        for command in ('DIY_MovePart','DIY_RotatePart'):
+            self.assertIn(command,self.command_actions)
+            self.assertIn(self.command_actions[command][0],menu.actions())
 if __name__=='__main__': unittest.main()

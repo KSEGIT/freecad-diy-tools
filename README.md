@@ -14,6 +14,8 @@ Use **Tools → DIY toolbar → Show DIY tools** to turn the row on or off. You 
 
 ## Tools
 
+Select one solid piece in the model tree, then use the **Move part** (blue arrows) or **Rotate part** (orange curved arrow) buttons. Both also appear directly in **Edit**. Move opens the native cursor handles; Rotate lets you choose X/Y/Z and enter an angle, then Apply. Each rotation supports Undo.
+
 - **Add timber / plywood:** Builder Depot PAR defaults: 4×2 = 94×44 mm, 3×2 = 69×44 mm, 3×4 = 94×69 mm. Plywood defaults to 18 mm thickness; enter finished cut length and depth. Sizes remain editable.
 - **Place & edit:** size and angle display, cut length, position, rotation, visible size guide, mouse Transform, and planar face alignment. Mouse rotation defaults to 90° increments.
 - **Join corners:** select one solid part, click its corner, then the destination corner. The nearest vertex is used.
@@ -31,7 +33,7 @@ On a fresh start in FreeCAD’s **<none>** placeholder, choose any workbench fir
 
 ## Checks
 
-`python3 -m unittest discover -s tests -v` checks startup, packaging and installation. `QT_QPA_PLATFORM=offscreen /Applications/FreeCAD.app/Contents/Resources/bin/python tests/verify_qt_toolbar.py` checks real Qt row placement, delayed layout restoration and saved visibility (native toolbar creation is simulated). Geometry and editor controls can also be tested with the bundled Python using `tests/verify_geometry.py` and `tests/verify_qt_editor.py`. Rendering in the user's live OpenGL view requires a manual check.
+`python3 -m unittest discover -s tests -v` checks startup, packaging and installation. `QT_QPA_PLATFORM=offscreen /Applications/FreeCAD.app/Contents/Resources/bin/python tests/verify_qt_toolbar.py` checks real Qt row placement, delayed layout restoration and saved visibility (native toolbar creation is simulated). Move/rotate and Undo can be checked with `QT_QPA_PLATFORM=offscreen /Applications/FreeCAD.app/Contents/Resources/bin/python tests/verify_qt_move_rotate.py`. Geometry and editor controls can also be tested with the bundled Python using `tests/verify_geometry.py` and `tests/verify_qt_editor.py`. Rendering in the user's live OpenGL view requires a manual check.
 
 ## Dimension sources
 
