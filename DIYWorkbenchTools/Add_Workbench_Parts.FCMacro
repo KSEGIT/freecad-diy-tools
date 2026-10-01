@@ -1,0 +1,140 @@
+"""Reusable timber and plywood creator. Run inside FreeCAD."""
+import FreeCAD as App
+import FreeCADGui as Gui
+from PySide import QtGui, QtCore
+try:
+    from PySide import QtWidgets
+except ImportError:
+    QtWidgets = QtGui
+
+
+def box_dimensions(length, width, thickness, orientation):
+    permutations = [(length, width, thickness), (length, thickness, width),
+                    (width, length, thickness), (thickness, length, width),
+                    (width, thickness, length), (thickness, width, length)]
+    return permutations[orientation]
+
+
+class WorkbenchPartsDialog(QtWidgets.QDialog):
+    def __init__(self):
+        super(WorkbenchPartsDialog, self).__init__(Gui.getMainWindow())
+        self.setWindowTitle('Add timber / plywood')
+        self.setMinimumWidth(410)
+        self.preferences = App.ParamGet('User parameter:BaseApp/Preferences/Macros/WorkbenchParts')
+        layout = QtWidgets.QVBoxLayout(self)
+        note = QtWidgets.QLabel('Enter actual finished sizes in mm.\nEach click adds one editable part to New build.')
+        layout.addWidget(note)
+        form = QtWidgets.QFormLayout()
+        layout.addLayout(form)
+        self.material = QtWidgets.QComboBox()
+        self.material.addItems(['4x2 PAR — 94 x 44 mm', '3x2 PAR — 69 x 44 mm', '3x4 PAR — 94 x 69 mm', 'Plywood — 18 mm', 'Other timber'])
+        form.addRow('Component', self.material)
+        self.name = QtWidgets.QLineEdit()
+        self.name.setPlaceholderText('Optional: front rail, left leg, shelf...')
+        form.addRow('Name', self.name)
+        self.length = self.number(0, 100000)
+        self.width = self.number(0, 100000)
+        self.thickness = self.number(0, 10000)
+        form.addRow('Cut length', self.length)
+        form.addRow('Actual width / sheet depth', self.width)
+        form.addRow('Actual thickness', self.thickness)
+        self.orientation = QtWidgets.QComboBox()
+        self.orientation.addItems(['Along X — flat', 'Along X — on edge',
+                                   'Along Y — flat', 'Along Y — on edge',
+                                   'Upright Z — wide face along X', 'Upright Z — wide face along Y'])
+        form.addRow('Direction', self.orientation)
+        self.x = self.number(-100000, 100000)
+        self.y = self.number(-100000, 100000)
+        self.z = self.number(-100000, 100000)
+        form.addRow('Position X', self.x)
+        form.addRow('Position Y', self.y)
+        form.addRow('Position Z', self.z)
+        layout.addWidget(QtWidgets.QLabel('Position is the lowest X/Y/Z corner.\nMove pieces later with Woodworking magicMove.'))
+        buttons = QtWidgets.QHBoxLayout()
+        layout.addLayout(buttons)
+        add = QtWidgets.QPushButton('Add piece')
+        add.clicked.connect(self.add_piece)
+        buttons.addWidget(add)
+        close = QtWidgets.QPushButton('Close')
+        close.clicked.connect(self.close)
+        buttons.addWidget(close)
+        self.status = QtWidgets.QLabel('')
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.material.currentIndexChanged.connect(self.load_section)
+        self.load_section()
+
+    def number(self, minimum, maximum):
+        field = QtWidgets.QDoubleSpinBox()
+        field.setRange(minimum, maximum)
+        field.setDecimals(2)
+        field.setSuffix(' mm')
+        field.setSingleStep(10)
+        field.setKeyboardTracking(False)
+        return field
+
+    def load_section(self, *args):
+        index = self.material.currentIndex()
+        key = 'BuilderDepotPAR1_' + str(index)
+        defaults = [(94, 44), (69, 44), (94, 69), (1220, 18), (0, 0)]
+        width, thickness = defaults[index]
+        self.width.setValue(self.preferences.GetFloat('Width' + key, width))
+        self.thickness.setValue(self.preferences.GetFloat('Thickness' + key, thickness))
+        self.status.setText('Builder Depot PAR finished sizes. Plywood stock: 2440 x 1220 mm; enter your cut length and depth. Sizes stay editable.')
+
+    def add_piece(self):
+        for field in (self.length, self.width, self.thickness, self.x, self.y, self.z):
+            field.interpretText()
+        length, width, thickness = self.length.value(), self.width.value(), self.thickness.value()
+        if min(length, width, thickness) <= 0:
+            self.status.setText('Enter a cut length, actual width and thickness greater than zero.')
+            return
+        doc = App.ActiveDocument
+        if doc is None:
+            self.status.setText('Open your rebuild document first, then click Add piece.')
+            return
+        group = doc.getObject('WorkbenchNewBuild')
+        if group is not None and group.TypeId != 'App::DocumentObjectGroup':
+            self.status.setText('An existing object uses the name WorkbenchNewBuild. Rename it first.')
+            return
+        doc.openTransaction('Add workbench piece')
+        try:
+            if group is None:
+                group = doc.addObject('App::DocumentObjectGroup', 'WorkbenchNewBuild')
+                group.Label = 'New build'
+            part = doc.addObject('Part::Box', 'WorkbenchPiece')
+            part.Length, part.Width, part.Height = box_dimensions(length, width, thickness, self.orientation.currentIndex())
+            material = self.material.currentText()
+            part.Label = self.name.text().strip() or '{} — {} x {} x {} mm'.format(material, length, width, thickness)
+            part.addProperty('App::PropertyString', 'StockType', 'Stock')
+            part.StockType = material
+            part.addProperty('App::PropertyString', 'CutAxis', 'Stock')
+            part.CutAxis = ('X', 'X', 'Y', 'Y', 'Z', 'Z')[self.orientation.currentIndex()]
+            part.addProperty('App::PropertyString', 'SizeHelp', 'Stock')
+            part.SizeHelp = 'Edit Length (X), Width (Y), Height (Z) in Data. Stock sizes are actual, not nominal.'
+            part.Placement.Base = App.Vector(self.x.value(), self.y.value(), self.z.value())
+            part.ViewObject.ShapeColor = (0.82, 0.65, 0.39) if self.material.currentIndex() != 3 else (0.92, 0.80, 0.55)
+            part.ViewObject.Transparency = 0
+            group.addObject(part)
+            doc.recompute()
+            doc.commitTransaction()
+        except Exception as error:
+            doc.abortTransaction()
+            self.status.setText('Could not add piece: ' + str(error))
+            App.Console.PrintError(str(error) + '\n')
+            return
+        key = 'BuilderDepotPAR1_' + str(self.material.currentIndex())
+        self.preferences.SetFloat('Width' + key, width)
+        self.preferences.SetFloat('Thickness' + key, thickness)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(part)
+        self.status.setText('Added {} to {}. Change the length or position and add the next piece. Save your document when ready.'.format(part.Label, doc.Label))
+
+
+# Keep the modeless window alive, and avoid duplicate windows on rerun.
+previous_dialog = getattr(Gui, '_workbench_parts_dialog', None)
+if previous_dialog is not None:
+    previous_dialog.close()
+Gui._workbench_parts_dialog = WorkbenchPartsDialog()
+Gui._workbench_parts_dialog.show()
+Gui._workbench_parts_dialog.raise_()
