@@ -1,12 +1,16 @@
 # FreeCAD DIY tools
 
-A separate FreeCAD workbench for timber and plywood. The add-on lives in its own `DIYWorkbenchTools` folder; Woodworking updates do not replace these files.
+An independent FreeCAD add-on with a universal timber and plywood toolbar. The add-on lives in its own `DIYWorkbenchTools` folder; Woodworking updates do not replace these files.
 
 ## Install on this Mac
 
-Save the model and close FreeCAD. Run `python3 install.py`, then reopen FreeCAD and select **DIY tools**. The default install folder is `~/Library/Application Support/FreeCAD/v1-1/Mod/DIYWorkbenchTools`. Use `--mod-root` to choose another FreeCAD profile.
+Save the model and close FreeCAD. Run `python3 install.py`, then reopen FreeCAD. **DIY tools** appears as the last row below the other top toolbars in every workbench. The default install folder is `~/Library/Application Support/FreeCAD/v1-1/Mod/DIYWorkbenchTools`. Use `--mod-root` to choose another FreeCAD profile.
 
-The DIY tools have their own top toolbar row and a **DIY tools** menu. No vendor files are modified.
+No workbench selection is needed. The original Woodworking add-on and other workbench files remain unchanged.
+
+## Show or hide
+
+Use **Tools → DIY toolbar → Show DIY tools** to turn the row on or off. You can also use the toolbar visibility toggle. The choice is saved across workbench changes and restarts.
 
 ## Tools
 
@@ -21,9 +25,13 @@ Old and new independent solid objects are supported. Select one object in the mo
 
 Run `python3 install.py` again from this repository. The original standalone source copies in the parent DIY folder are also preserved. Keep custom tools in this add-on rather than editing Woodworking's `InitGui.py`.
 
+## Startup placeholder
+
+On a fresh start in FreeCAD’s **<none>** placeholder, choose any workbench first. FreeCAD creates global command actions when a workbench loads. The row then remains available across workbench changes.
+
 ## Checks
 
-`python3 -m unittest discover -s tests` checks startup integration with simulated FreeCAD interfaces. Geometry and Qt controls can also be tested with FreeCAD's bundled Python as described in the test files. Rendering in the user's live OpenGL view requires a manual check.
+`python3 -m unittest discover -s tests -v` checks startup, packaging and installation. `QT_QPA_PLATFORM=offscreen /Applications/FreeCAD.app/Contents/Resources/bin/python tests/verify_qt_toolbar.py` checks real Qt row placement, delayed layout restoration and saved visibility (native toolbar creation is simulated). Geometry and editor controls can also be tested with the bundled Python using `tests/verify_geometry.py` and `tests/verify_qt_editor.py`. Rendering in the user's live OpenGL view requires a manual check.
 
 ## Dimension sources
 
@@ -33,4 +41,4 @@ Run `python3 install.py` again from this repository. The original standalone sou
 
 ## Addon Manager package
 
-`package.xml` describes this independent workbench. The repository is private and is not in the public Addon Manager list. Public distribution would need a license choice, maintainer contact, and listing review. The installer works now without that listing.
+`package.xml` describes this independent toolbar add-on. FreeCAD 1.1 loads the nested `InitGui.py` through its workbench content loader, but the extension registers no selectable workbench. The repository is private and is not in the public Addon Manager list. Public distribution would need a license choice, maintainer contact, and listing review. The installer works now without that listing.

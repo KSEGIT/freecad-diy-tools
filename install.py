@@ -14,7 +14,7 @@ def install(mod_root):
         if item.is_file() and item.suffix in ('.py', '.svg', '.FCMacro'):
             shutil.copy2(item, target / item.name)
     print('Installed:', target)
-    print('Save your model and restart FreeCAD, then select DIY tools.')
+    print('Save your model and restart FreeCAD, the DIY tools row will appear in every workbench.')
     return target
 
 

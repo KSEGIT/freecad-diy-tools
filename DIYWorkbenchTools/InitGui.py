@@ -1,4 +1,4 @@
-"""Standalone DIY tools workbench; install as DIYWorkbenchTools/InitGui.py."""
+"""Universal DIY toolbar extension; no workbench registration or vendor edits."""
 import importlib as _diy_importlib
 from pathlib import Path as _DIYPath
 import sys as _diy_sys
@@ -26,27 +26,4 @@ if _diy_root in _diy_sys.path:
 _diy_sys.path.insert(0, _diy_root)
 
 
-class DIYWorkbenchToolsWorkbench(Workbench):
-    MenuText = 'DIY tools'
-    ToolTip = 'Add timber and plywood, edit cut sizes, and place solid pieces'
-    Icon = str(_DIYPath(_diy_root) / 'WorkbenchParts.svg')
-
-    def Initialize(self):
-        # PartGui supplies the view providers for the solids these tools create.
-        for module in ('PartGui', 'WorkbenchPartsCommand', 'WorkbenchPlacement',
-                       'WorkbenchPlaceEdit'):
-            _diy_importlib.import_module(module)
-        commands = ['DIY_AddWorkbenchParts', 'DIY_PlaceEdit', 'DIY_JoinCorners',
-                    'DIY_StandUpright', 'DIY_RotateX', 'DIY_RotateY', 'DIY_RotateZ']
-        self.appendToolbar('DIY tools', commands)
-        self.appendMenu(['DIY tools'], commands)
-
-    def Activated(self):
-        # Write persistent order now; place the toolbar after FreeCAD restores it.
-        _diy_importlib.import_module('WorkbenchToolbarLayout').ensure_row()
-
-    def GetClassName(self):
-        return 'Gui::PythonWorkbench'
-
-
-_DIYGui.addWorkbench(DIYWorkbenchToolsWorkbench())
+_diy_importlib.import_module('WorkbenchToolbarLayout').start()

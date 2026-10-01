@@ -1,88 +1,36 @@
-"""Independent DIY workbench startup tests with native GUI boundaries simulated."""
+"""InitGui loads a global extension, never a workbench or vendor module."""
 from pathlib import Path
 import sys
 import tempfile
 import types
 import unittest
 from unittest.mock import patch
-
 SOURCE = Path(__file__).resolve().parents[1] / 'DIYWorkbenchTools' / 'InitGui.py'
-
-class Workbench:
-    def __init__(self):
-        self.toolbars, self.menus = [], []
-    def appendToolbar(self, name, commands):
-        self.toolbars.append((name, list(commands)))
-    def appendMenu(self, path, commands):
-        self.menus.append((path, list(commands)))
-
-class WorkbenchTests(unittest.TestCase):
+class StartupTests(unittest.TestCase):
     def setUp(self):
-        self.registry, self.rows = {}, []
-        self.gui = types.SimpleNamespace(addWorkbench=self.add_workbench)
-        self.app = types.SimpleNamespace(getUserAppDataDir=lambda: '/Users/example/FreeCAD/')
-        self.modules = {
-            'FreeCAD': self.app, 'FreeCADGui': self.gui,
-            'PartGui': types.SimpleNamespace(),
-            'WorkbenchPartsCommand': types.SimpleNamespace(),
-            'WorkbenchPlacement': types.SimpleNamespace(),
-            'WorkbenchPlaceEdit': types.SimpleNamespace(),
-            'WorkbenchToolbarLayout': types.SimpleNamespace(ensure_row=lambda: self.rows.append('row')),
-        }
-        self.patch = patch.dict(sys.modules, self.modules)
-        self.patch.start()
-        self.path_before = sys.path[:]
-        # Isolate path scenarios from discovery's real repository working directory.
-        sys.path[:] = [entry for entry in sys.path
-                       if Path(entry).name != 'DIYWorkbenchTools'
-                       and not (Path(entry) / 'DIYWorkbenchTools').is_dir()]
+        self.calls=[]
+        self.before=sys.path[:]
+        self.modules={'FreeCAD':types.SimpleNamespace(getUserAppDataDir=lambda:'/example/FreeCAD/'),
+                      'FreeCADGui':types.SimpleNamespace(addWorkbench=lambda wb:self.calls.append('workbench')),
+                      'WorkbenchToolbarLayout':types.SimpleNamespace(start=lambda:self.calls.append('start'))}
+        self.patch=patch.dict(sys.modules,self.modules); self.patch.start()
+        sys.path[:]=[p for p in sys.path if Path(p).name!='DIYWorkbenchTools' and not (Path(p)/'DIYWorkbenchTools').is_dir()]
     def tearDown(self):
-        self.patch.stop()
-        sys.path[:] = self.path_before
-    def add_workbench(self, wb):
-        self.registry[type(wb).__name__] = wb
-    def load(self, with_file=True):
-        scope = {'Workbench': Workbench, '__name__': '__main__'}
-        if with_file:
-            scope['__file__'] = str(SOURCE)
-        exec(compile(SOURCE.read_text(), str(SOURCE), 'exec'), scope)
-        self.assertIn('DIYWorkbenchToolsWorkbench', self.registry)
-        return self.registry['DIYWorkbenchToolsWorkbench']
-    def test_registers_independent_dropdown_without_woodworking(self):
-        wb = self.load()
-        self.assertEqual(wb.MenuText, 'DIY tools')
-        self.assertEqual(wb.GetClassName(), 'Gui::PythonWorkbench')
-        self.assertEqual(wb.toolbars, [])
-    def test_initialize_creates_own_toolbar_and_menu_with_seven_commands(self):
-        wb = self.load()
-        wb.Initialize()
-        commands = ['DIY_AddWorkbenchParts', 'DIY_PlaceEdit', 'DIY_JoinCorners',
-                    'DIY_StandUpright', 'DIY_RotateX', 'DIY_RotateY', 'DIY_RotateZ']
-        self.assertEqual(wb.toolbars, [('DIY tools', commands)])
-        self.assertEqual(wb.menus, [(['DIY tools'], commands)])
-    def test_activation_enforces_own_layout_each_time(self):
-        wb = self.load()
-        wb.Initialize()
-        wb.Activated()
-        wb.Activated()
-        self.assertEqual(self.rows, ['row', 'row'])
-    def test_native_initgui_without_file_uses_addon_path(self):
+        self.patch.stop(); sys.path[:]=self.before
+    def load(self,with_file=True):
+        scope={'__name__':'__main__','Workbench':object}
+        if with_file: scope['__file__']=str(SOURCE)
+        exec(compile(SOURCE.read_text(),str(SOURCE),'exec'),scope)
+    def test_starts_extension_without_registering_workbench(self):
+        self.load(); self.assertEqual(self.calls,['start'])
+    def test_native_no_file_uses_module_directory(self):
         with tempfile.TemporaryDirectory() as folder:
-            addon = Path(folder).resolve() / 'DIYWorkbenchTools'
-            addon.mkdir()
-            sys.path.append(str(addon))
-            self.load(with_file=False)
-            self.assertEqual(sys.path[0], str(addon))
-    def test_native_initgui_without_path_uses_user_addon_directory(self):
-        self.load(with_file=False)
-        self.assertEqual(sys.path[0], '/Users/example/FreeCAD/Mod/DIYWorkbenchTools')
-    def test_nested_addon_manager_workbench_directory_is_used(self):
+            path=Path(folder)/'DIYWorkbenchTools'; path.mkdir(); sys.path.append(str(path))
+            self.load(False); self.assertEqual(sys.path[0],str(path.resolve()))
+    def test_native_no_file_falls_back_to_user_mod(self):
+        self.load(False); self.assertEqual(sys.path[0],'/example/FreeCAD/Mod/DIYWorkbenchTools')
+    def test_package_directory_is_supported(self):
         with tempfile.TemporaryDirectory() as folder:
-            package = Path(folder).resolve()
-            (package / 'DIYWorkbenchTools').mkdir()
-            sys.path.append(str(package))
-            self.load(with_file=False)
-            self.assertEqual(sys.path[0], str(package / 'DIYWorkbenchTools'))
-
-if __name__ == '__main__':
-    unittest.main()
+            (Path(folder)/'DIYWorkbenchTools').mkdir(); sys.path.append(folder)
+            self.load(False); self.assertEqual(sys.path[0],str(Path(folder).resolve()/'DIYWorkbenchTools'))
+if __name__=='__main__': unittest.main()
