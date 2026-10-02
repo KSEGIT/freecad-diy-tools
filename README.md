@@ -17,6 +17,7 @@ Use **Tools → DIY toolbar → Show DIY tools** to turn the row on or off. You 
 Select one solid piece in the model tree, then use the **Move part** (blue arrows) or **Rotate part** (orange curved arrow) buttons. Both also appear directly in **Edit**. Move opens the native cursor handles; Rotate lets you choose X/Y/Z and enter an angle, then Apply. Each rotation supports Undo.
 
 - **Add timber / plywood:** Builder Depot PAR defaults: 4×2 = 94×44 mm, 3×2 = 69×44 mm, 3×4 = 94×69 mm. Plywood defaults to 18 mm thickness; enter finished cut length and depth. Sizes remain editable.
+- **Magnetic Move:** select one independent solid, click a source corner, move the cursor and click to place. The ghost shows the proposed position before the model changes. Green target markers identify corner, straight-edge midpoint or planar-face snaps. Guides show X/Y/Z movement and total distance. Use X/Y/Z to lock an axis; enter a signed distance and Apply for an exact move on that axis. Escape or Cancel leaves the model unchanged. Each completed move supports Undo. This places pieces; it does not create permanent assembly constraints.
 - **Place & edit:** size and angle display, cut length, position, rotation, visible size guide, mouse Transform, and planar face alignment. Mouse rotation defaults to 90° increments.
 - **Join corners:** select one solid part, click its corner, then the destination corner. The nearest vertex is used.
 - **Stand upright / Rotate X, Y, Z:** orient the selected part.
@@ -33,7 +34,7 @@ On a fresh start in FreeCAD’s **<none>** placeholder, choose any workbench fir
 
 ## Checks
 
-`python3 -m unittest discover -s tests -v` checks startup, packaging and installation. `QT_QPA_PLATFORM=offscreen /Applications/FreeCAD.app/Contents/Resources/bin/python tests/verify_qt_toolbar.py` checks real Qt row placement, delayed layout restoration and saved visibility (native toolbar creation is simulated). Move/rotate and Undo can be checked with `QT_QPA_PLATFORM=offscreen /Applications/FreeCAD.app/Contents/Resources/bin/python tests/verify_qt_move_rotate.py`. Geometry and editor controls can also be tested with the bundled Python using `tests/verify_geometry.py` and `tests/verify_qt_editor.py`. Rendering in the user's live OpenGL view requires a manual check.
+`python3 -m unittest discover -s tests -v` checks startup, packaging and installation. `QT_QPA_PLATFORM=offscreen /Applications/FreeCAD.app/Contents/Resources/bin/python tests/verify_qt_toolbar.py` checks real Qt row placement, delayed layout restoration and saved visibility (native toolbar creation is simulated). Magnetic geometry and lifecycle checks use `tests/verify_magnetic_geometry.py` and `tests/verify_qt_magnetic.py` with the same bundled Python (the GUI view boundary is simulated). Move/rotate and Undo can be checked with `QT_QPA_PLATFORM=offscreen /Applications/FreeCAD.app/Contents/Resources/bin/python tests/verify_qt_move_rotate.py`. Geometry and editor controls can also be tested with the bundled Python using `tests/verify_geometry.py` and `tests/verify_qt_editor.py`. Rendering in the user's live OpenGL view requires a manual check.
 
 ## Dimension sources
 

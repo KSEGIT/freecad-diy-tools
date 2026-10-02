@@ -18,7 +18,7 @@ GROUP = 'Custom_DIYWorkbenchTools'
 PREFS = 'User parameter:BaseApp/Preferences/DIYWorkbenchTools'
 GLOBAL_PREFS = 'User parameter:BaseApp/Workbench/Global/Toolbar'
 VISIBILITY_PREFS = 'User parameter:BaseApp/MainWindow/Toolbars'
-COMMANDS = ('DIY_AddWorkbenchParts', 'DIY_MovePart', 'DIY_RotatePart',
+COMMANDS = ('DIY_AddWorkbenchParts', 'DIY_MovePart', 'DIY_RotatePart', 'DIY_MagneticMove',
             'DIY_PlaceEdit', 'DIY_JoinCorners',
             'DIY_StandUpright', 'DIY_RotateX', 'DIY_RotateY', 'DIY_RotateZ')
 _controller = None
@@ -98,7 +98,7 @@ class ToolbarController:
                 # Reuse the native command actions so availability, tooltips,
                 # icons and shortcuts match the toolbar in every workbench.
                 self.edit_actions = []
-                for command_name in ('DIY_MovePart', 'DIY_RotatePart'):
+                for command_name in ('DIY_MovePart', 'DIY_RotatePart', 'DIY_MagneticMove'):
                     command = Gui.Command.get(command_name)
                     if command is None:
                         continue
@@ -144,7 +144,7 @@ def start():
             App.Console.PrintError('DIY tools: GUI startup timed out. Restart FreeCAD or call WorkbenchToolbarLayout.start().\n')
         return
     for module in ('PartGui', 'WorkbenchPartsCommand', 'WorkbenchPlacement',
-                   'WorkbenchPlaceEdit', 'WorkbenchMoveRotate'):
+                   'WorkbenchPlaceEdit', 'WorkbenchMoveRotate', 'WorkbenchMagneticMove'):
         importlib.import_module(module)
     _controller = ToolbarController(main)
     _controller.install()
