@@ -82,7 +82,7 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
     source_min = min((f[1].Area for f in source_faces), default=0)
     candidates = {}
 
-    def propose(point, destination, kind, identity, label, faces=None, depth=False):
+    def propose(point, destination, kind, identity, label, faces=None, depth=False, adjacent_planes=0):
         if identity in excluded_keys:
             return
         correction = destination - point - raw
@@ -128,13 +128,67 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
         if retained:
             score = (score[0],max(0,score[1]-8)) + score[2:]
         existing = candidates.get(delta_key)
-        if existing is None or score < existing[0]:
+        rank = (kind != 'extension',-adjacent_planes,score)
+        existing_rank = None if existing is None else (
+            existing[1]['kind'] != 'extension',-existing[1].get('adjacent_planes',0),existing[0])
+        if existing_rank is None or rank < existing_rank:
             candidates[delta_key] = (score, {'delta': delta, 'source': App.Vector(point),
                 'target': App.Vector(destination), 'label': label, 'kind': kind,
                 'key': identity, 'depth': depth,
-                'target_face_index': identity[3] if depth else None, 'pixels': pixels}, faces)
+                'target_face_index': identity[3] if depth else None, 'pixels': pixels,
+                'adjacent_planes': adjacent_planes}, faces)
+
+    def incident_directions(face, point):
+        directions = []
+        for edge in face.Edges:
+            if not isinstance(edge.Curve, Part.Line) or len(edge.Vertexes) != 2:
+                continue
+            a,b = (vertex.Point for vertex in edge.Vertexes)
+            if min((a-point).Length,(b-point).Length) > _EPS:
+                continue
+            direction = b-a
+            if direction.Length > _EPS:
+                direction.normalize()
+                directions.append(direction)
+        return directions
+
+    def adjacent_flushes(source_face, target_face, base_delta, key, label, depth):
+        # One aligned edge leaves its along-edge offset unchanged. At a nearby
+        # boundary, two independent parallel edge pairs also align the adjacent
+        # planes. Capture only a small in-plane correction; mid-rail placement
+        # must still slide freely, and a distant endpoint must not attract it.
+        if intended_index is None:
+            return
+        center = source_face.CenterOfMass
+        for svi, vertex in enumerate(source_face.Vertexes):
+            sp = vertex.Point
+            source_directions = incident_directions(source_face,sp)
+            for tvi, target_vertex in enumerate(target_face.Vertexes):
+                tp = target_vertex.Point
+                if component.startswith('Edge') and feature is not None and not any(v.isSame(target_vertex) for v in feature.Vertexes):
+                    continue
+                if component.startswith('Vertex') and feature is not None and not target_vertex.isSame(feature):
+                    continue
+                identity = key+('depth_adjacent' if depth else 'adjacent',svi,tvi)
+                retained = previous is not None and previous.get('key') == identity
+                delta = tp-sp
+                in_plane = delta-base_delta
+                if in_plane.Length > min(world_tolerance,12)+(8 if retained else 0):
+                    continue
+                a = project(center+base_delta)
+                b = project(center+delta)
+                if math.hypot(a[0]-b[0],a[1]-b[1]) > tolerance_px+(8 if retained else 0):
+                    continue
+                target_directions = incident_directions(target_face,tp)
+                matched = [direction for direction in source_directions
+                           if any(abs(direction.dot(other)) > 1-_EPS for other in target_directions)]
+                if not any(abs(a.dot(b)) < 1-_EPS for a in matched for b in matched):
+                    continue
+                propose(center,center+delta,'flush',identity,label,
+                        (source_face,target_face,False),depth,adjacent_planes=2)
 
     def edge_flushes(source_face, target_face, base_delta, key, label, depth):
+        adjacent_flushes(source_face,target_face,base_delta,key,label,depth)
         # Align parallel finite face edges without pulling a mid-rail joint to
         # an endpoint. Start at the face-contact depth, then preserve distance
         # along the destination edge's supporting line.
@@ -258,13 +312,16 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
     # inferred joint. Try its extension first, but rank that joint against all
     # OTHER joints using the full correction. If extension validation fails,
     # the remaining contacts re-enter the global ranking without suppression.
+    # Within that same face pair, a bounded two-plane boundary fit takes
+    # precedence over partial face/one-edge fits that leave a small offset.
     groups = {}
     for candidate in candidates.values():
         _score, result, faces = candidate
         group = (result.get('depth',False),result['key'][:4]) if faces is not None else result['key']
         groups.setdefault(group, []).append(candidate)
     for group in groups.values():
-        group.sort(key=lambda c: (c[1]['kind'] != 'extension', c[0]))
+        group.sort(key=lambda c: (c[1]['kind'] != 'extension',
+                                 -c[1].get('adjacent_planes',0),c[0]))
     while groups:
         best_group = min(groups, key=lambda key: groups[key][0][0])
         _score, result, faces = groups[best_group].pop(0)
