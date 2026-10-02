@@ -32,7 +32,7 @@ def _faces(shape):
 
 def connection_snap(source_shape, target_shapes, raw_delta, project,
                     tolerance_px=18, world_tolerance=50, axis=None, previous=None,
-                    view_direction=None, depth_faces=None):
+                    view_direction=None, depth_faces=None, excluded_keys=None):
     """Return delta/contact points/label/kind/key for a nearby safe joint.
 
     ``target_shapes`` contains (label, world_shape) pairs. ``project`` maps a
@@ -44,12 +44,15 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
     radius, but lateral correction and screen capture remain limited.
     ``view_direction`` is a vector or callable(world_point) returning its camera
     ray direction. No depth inference occurs unless both arguments are supplied.
+    ``excluded_keys`` skips individual rejected connections, preserving all
+    target solids as collision blockers and other contacts on those solids.
     """
     if axis is not None and axis not in _AXIS:
         raise ValueError('Unknown movement axis: {}'.format(axis))
     if tolerance_px <= 0 or world_tolerance <= 0 or source_shape.isNull():
         return None
     depth_faces = depth_faces or {}
+    excluded_keys = excluded_keys or set()
     def ray_direction(point):
         value = view_direction(point) if callable(view_direction) else view_direction
         if value is None:
@@ -73,6 +76,8 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
     candidates = {}
 
     def propose(point, destination, kind, identity, label, faces=None, depth=False):
+        if identity in excluded_keys:
+            return
         correction = destination - point - raw
         distance = correction.Length
         lateral = distance

@@ -175,6 +175,19 @@ class ConnectionTests(unittest.TestCase):
         source,target,result,desired = self.depth_case(axis='X')
         self.assertTrue(result is None or not result.get('depth'))
 
+    def test_excluding_one_contact_keeps_other_face_contacts_and_blockers(self):
+        raw = (1710,5,3)
+        first = self.snap(raw)
+        alternative = self.snap(raw, excluded_keys={first['key']})
+        self.assertIsNotNone(alternative)
+        self.assertNotEqual(alternative['key'],first['key'])
+        self.assertEqual(alternative['key'][0],first['key'][0])
+        blocker = Part.makeBox(20,20,20,App.Vector(1750,10,10))
+        result = self.snap(raw, targets=[('Beam',self.target),('Blocker',blocker)],
+                           excluded_keys={first['key']})
+        if result is not None:
+            self.assertLess(self.source.translated(result['delta']).common(blocker).Volume,1e-7)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
