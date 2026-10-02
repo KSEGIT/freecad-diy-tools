@@ -83,9 +83,15 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         self.view = Gui.activeDocument().activeView()
         self.workbench = _workbench()
         self.source_shape = part.Shape.copy()
-        pickup_point = _picked_point(part) if pickup_point is None else pickup_point
+        native_pickup = pickup_point is None
+        pickup_point = _picked_point(part) if native_pickup else pickup_point
         self.has_pickup = pickup_point is not None
         self.source = App.Vector(pickup_point if self.has_pickup else self.source_shape.CenterOfMass)
+        self.pickup_offset = App.Vector()
+        if native_pickup and self.has_pickup:
+            grip = self.grip_point(self.source)
+            self.pickup_offset = self.source - grip
+            self.source = grip
         self.pointer_start = None
         self.destination = App.Vector(self.source)
         self.connection = None
@@ -207,30 +213,129 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         c = self.point_on_plane((position[0], position[1] + 20))
         return max(0.001, min(50., max((a-b).Length, (a-c).Length)))
 
-    def depth_faces(self, targets, raw_delta, position):
-        """Permit depth travel only towards faces actually under the moving solid."""
-        owners = {self.target_objects[id(shape)].Name: i for i, (_, shape) in enumerate(targets)}
+    def grip_point(self, point):
+        """Recognise a nearby source edge without pulling the cursor to its centre."""
+        pixel = self.view.getPointOnScreen(point)
+        nearby = []
+        for edge in self.source_shape.Edges:
+            distance, pairs, _ = Part.Vertex(point).distToShape(edge)
+            if not pairs:
+                continue
+            candidate = pairs[0][1]
+            projected = self.view.getPointOnScreen(candidate)
+            pixels = ((projected[0]-pixel[0])**2 + (projected[1]-pixel[1])**2)**.5
+            # Ignore edges hidden behind the picked face in the same projection.
+            scale = max((self.point_on_plane((pixel[0]+8, pixel[1])) -
+                         self.point_on_plane(pixel)).Length, .001)
+            if pixels <= 8 and distance <= scale:
+                nearby.append((distance, candidate))
+        if not nearby:
+            return App.Vector(point)
+        return App.Vector(min(nearby, key=lambda item: item[0])[1])
+
+    def component_faces(self, shape, component):
+        """Include the planar faces that own an explicitly hovered edge or corner."""
+        for prefix, items in (('Face', shape.Faces), ('Edge', shape.Edges), ('Vertex', shape.Vertexes)):
+            suffix = component[len(prefix):] if component.startswith(prefix) else ''
+            if not suffix.isdigit() or not 1 <= int(suffix) <= len(items):
+                continue
+            index = int(suffix)-1
+            if prefix == 'Face':
+                return {index} if isinstance(items[index].Surface, Part.Plane) else set()
+            feature = items[index]
+            return {i for i, face in enumerate(shape.Faces)
+                    if isinstance(face.Surface, Part.Plane)
+                    and any(feature.isSame(child) for child in
+                            (face.Edges if prefix == 'Edge' else face.Vertexes))}
+        return set()
+
+    def hit_intent(self, targets, position):
+        info = self.view.getObjectInfo(tuple(int(round(v)) for v in position))
+        if not info or info.get('Document') != self.docname or 'ParentObject' in info:
+            return None
+        for index, (_, shape) in enumerate(targets):
+            if self.target_objects[id(shape)].Name != info.get('Object'):
+                continue
+            component = info.get('Component', '')
+            faces = self.component_faces(shape, component)
+            if not faces:
+                return None
+            if all(key in info for key in ('x', 'y', 'z')):
+                point = App.Vector(info['x'], info['y'], info['z'])
+            else:
+                # Some native pick paths omit coordinates; keep a local feature aim.
+                point = shape.Faces[min(faces)].CenterOfMass
+            return {'target_index': index, 'point': point, 'component': component,
+                    'source_pickup': App.Vector(self.source), 'faces': faces}
+        return None
+
+    def local_intent(self, targets, raw_delta, position):
+        """A nearby visible feature may capture, but a distant beam end cannot."""
         probes = [position]
+        probes.extend((position[0]+dx, position[1]+dy) for radius in (2, 4, 8, 16)
+                      for dx, dy in ((radius, 0), (-radius, 0), (0, radius), (0, -radius)))
         probes.extend(self.view.getPointOnScreen(f.CenterOfMass + raw_delta)
                       for f in self.source_shape.Faces if isinstance(f.Surface, Part.Plane))
         probes.extend(self.view.getPointOnScreen(v.Point + raw_delta)
                       for v in self.source_shape.Vertexes)
-        faces = {}; seen = set()
+        for _, shape in targets:
+            for edge in shape.Edges:
+                if len(edge.Vertexes) != 2:
+                    continue
+                a, b = [self.view.getPointOnScreen(v.Point) for v in edge.Vertexes]
+                dx, dy = b[0]-a[0], b[1]-a[1]; square = dx*dx+dy*dy
+                t = max(0., min(1., ((position[0]-a[0])*dx+(position[1]-a[1])*dy)/square)) if square else 0.
+                pixel = (a[0]+t*dx, a[1]+t*dy)
+                if ((pixel[0]-position[0])**2+(pixel[1]-position[1])**2)**.5 <= 18:
+                    probes.append(pixel)
+        probes.sort(key=lambda pixel: (pixel[0]-position[0])**2+(pixel[1]-position[1])**2)
+        seen = set()
         for pixel in probes:
+            if ((pixel[0]-position[0])**2+(pixel[1]-position[1])**2)**.5 > 40:
+                continue
             pixel = tuple(int(round(v)) for v in pixel)
             if pixel in seen:
                 continue
             seen.add(pixel)
-            if len(seen) > 15:
+            if len(seen) > 32:
                 break
-            info = self.view.getObjectInfo(pixel)
-            if not info or info.get('Document') != self.docname or 'ParentObject' in info:
+            intent = self.hit_intent(targets, pixel)
+            if intent is not None:
+                return intent
+        return None
+
+    def depth_faces(self, targets, raw_delta, position):
+        intent = self.hit_intent(targets, position) or self.local_intent(targets, raw_delta, position)
+        return {intent['target_index']: intent['faces']} if intent is not None else {}
+
+    def retained_intent(self, targets, position):
+        if self.connection is None:
+            return None
+        index = self.connection['key'][0]
+        if index >= len(targets):
+            return None
+        if self.connection.get('_target_name') != self.target_objects[id(targets[index][1])].Name:
+            return None
+        acquired = self.connection.get('_cursor', position)
+        if ((position[0]-acquired[0])**2+(position[1]-acquired[1])**2)**.5 > 26:
+            return None
+        target = self.connection['target']
+        pixel = self.view.getPointOnScreen(target)
+        distances = [((pixel[0]-position[0])**2+(pixel[1]-position[1])**2)**.5]
+        for edge in targets[index][1].Edges:
+            if len(edge.Vertexes) != 2:
                 continue
-            index = owners.get(info.get('Object'))
-            component = info.get('Component', '')
-            if index is not None and component.startswith('Face') and component[4:].isdigit():
-                faces.setdefault(index, set()).add(int(component[4:]) - 1)
-        return faces
+            a, b = [self.view.getPointOnScreen(v.Point) for v in edge.Vertexes]
+            dx, dy = b[0]-a[0], b[1]-a[1]
+            square = dx*dx+dy*dy
+            t = max(0., min(1., ((position[0]-a[0])*dx+(position[1]-a[1])*dy)/square)) if square else 0.
+            distances.append(((a[0]+t*dx-position[0])**2+(a[1]+t*dy-position[1])**2)**.5)
+        if min(distances) > 26:
+            return None
+        face = self.connection.get('target_face_index')
+        component = 'Face' + str(face+1) if isinstance(face, int) else ''
+        return {'target_index': index, 'point': target, 'component': component,
+                'source_pickup': App.Vector(self.source)}
 
     def view_direction(self, point):
         pixel = self.view.getPointOnScreen(point)
@@ -244,13 +349,25 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         targets = self.targets()
         previous = self.connection
         excluded_keys = set()
-        faces = self.depth_faces(targets, raw_delta, position)
+        direct = self.hit_intent(targets, position)
+        retained = self.retained_intent(targets, position)
+        # Keep the acquired part during small boundary jitter. Moving beyond the
+        # release radius permits a deliberate switch to the directly hovered part.
+        if direct and retained and direct['target_index'] != retained['target_index']:
+            intent = retained
+        else:
+            intent = direct or retained or self.local_intent(targets, raw_delta, position)
+        if intent is None:
+            return None
+        index = intent['target_index']
+        intended_faces = intent.get('faces') or self.component_faces(targets[index][1], intent['component'])
+        faces = {index: intended_faces} if intended_faces else {}
         capture = self.capture_distance(position)
         for attempt in range(32):
             snap = connection_snap(self.source_shape, targets, raw_delta,
                                    self.view.getPointOnScreen, world_tolerance=capture,
                                    axis=self.axis, previous=previous,
-                                   view_direction=self.view_direction, depth_faces=faces, excluded_keys=excluded_keys)
+                                   view_direction=self.view_direction, depth_faces=faces, excluded_keys=excluded_keys, intent=intent)
             if snap is None:
                 return None
             pixel = self.view.getPointOnScreen(snap['target'])
@@ -261,11 +378,14 @@ class MagneticMoveDialog(QtWidgets.QDialog):
             component = info.get('Component', '') if info else ''
             same_target = (info and info.get('Document') == self.docname
                            and info.get('Object') == target_obj.Name and 'ParentObject' not in info)
-            same_face = (component == 'Face' + str(face_index + 1)) if isinstance(face_index, int) else True
+            same_face = (face_index in self.component_faces(targets[index][1], component)) if isinstance(face_index, int) else True
             # Depth candidates must stay on the probed visible contact face.
             # Ordinary short snaps retain silhouette fallback at empty pixels.
             depth = snap.get('depth', False)
             if ((same_target and (not depth or same_face)) or (not info and not depth)):
+                snap['_target_name'] = target_obj.Name
+                snap['_cursor'] = (self.connection.get('_cursor', position)
+                                   if self.connection and self.connection.get('_target_name') == target_obj.Name else position)
                 return snap
             excluded_keys.add(snap['key'])
             previous = None
@@ -280,10 +400,11 @@ class MagneticMoveDialog(QtWidgets.QDialog):
                                                         float(position[1]) / max(1, height)))
         origin, direction = App.Vector(tuple(near)), App.Vector(tuple(far)) - App.Vector(tuple(near))
         normal = App.Vector(tuple(camera.orientation.getValue().multVec(coin.SbVec3f(0, 0, -1))))
+        plane_origin = self.source + self.pickup_offset
         divisor = direction.dot(normal)
         if abs(divisor) < 1e-12:
             return App.Vector(self.source)
-        return origin + direction * ((self.source - origin).dot(normal) / divisor)
+        return origin + direction * ((plane_origin - origin).dot(normal) / divisor)
 
     def axis_point(self, position, plane_point):
         if self.axis is None:
@@ -315,7 +436,7 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         if self.closed:
             return
         self.last_position = position
-        plane_point = self.point_on_plane(position)
+        plane_point = self.point_on_plane(position) - self.pickup_offset
         point = self.axis_point(position, plane_point)
         if not self.has_pickup:
             if self.pointer_start is None:

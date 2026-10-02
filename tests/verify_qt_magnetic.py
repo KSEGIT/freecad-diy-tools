@@ -83,13 +83,78 @@ class MagneticTests(unittest.TestCase):
             gui.Selection.getSelectionEx = lambda: [selected] if selection else []
             selection[:] = [piece]
             self.dialog = module.MagneticMoveDialog(piece)
-            self.assertEqual(tuple(self.dialog.source), (10., 3., 7.))
+            self.assertEqual(tuple(self.dialog.source + self.dialog.pickup_offset), (10., 3., 7.))
             self.assertTrue(self.dialog.has_pickup)
             self.assertEqual(selection, [])
             self.dialog.move((110, 103))
             self.assertLess((self.dialog.destination - self.dialog.source).Length, 1e-5)
         finally:
             gui.Selection.getSelectionEx = original
+
+    def test_native_long_beam_grip_near_edge_keeps_pickup_without_jump(self):
+        self.dialog.close(); piece.Length = 1000; piece.Width = 94; piece.Height = 44
+        self.doc.recompute(); point = App.Vector(500, 2, 44)
+        old = gui.Selection.getSelectionEx
+        try:
+            gui.Selection.getSelectionEx = lambda: [types.SimpleNamespace(Object=piece, PickedPoints=[point])]
+            self.dialog = module.MagneticMoveDialog(piece)
+            self.assertAlmostEqual(self.dialog.source.y, 0)
+            self.assertAlmostEqual(self.dialog.source.x, 500)
+            module.set_snap_enabled(False); self.dialog.move((600, 102))
+            self.assertLess((self.dialog.destination-self.dialog.source).Length, 1e-5)
+        finally:
+            gui.Selection.getSelectionEx = old
+
+    def test_direct_edge_intent_has_adjacent_faces_and_keeps_collision_targets(self):
+        target = self.target(); other = self.target('Other', App.Vector(80, 0, 0))
+        edge = target.Shape.Edges[0]
+        point = edge.CenterOfMass
+        view.pick = {'Document': self.docname, 'Object': target.Name, 'Component': 'Edge1',
+                     'x': point.x, 'y': point.y, 'z': point.z}
+        old = module.connection_snap; calls = []
+        try:
+            def inspect(*args, **kwargs):
+                calls.append((args[1], kwargs)); return None
+            module.connection_snap = inspect
+            self.dialog.find_connection(App.Vector(40, 0, 0), (150, 105))
+            targets, options = calls[0]
+            self.assertEqual(len(targets), 2)
+            self.assertEqual(options['intent']['target_index'], 0)
+            self.assertEqual(options['intent']['component'], 'Edge1')
+            self.assertEqual(len(options['depth_faces'][0]), 2)
+        finally:
+            module.connection_snap = old
+
+    def test_acquired_target_survives_boundary_jitter_then_releases(self):
+        target = self.target(); other = self.target('Other', App.Vector(60, 0, 0))
+        self.dialog.targets()
+        self.dialog.connection = {'key': (0, target.Label, 0), 'target': App.Vector(50, 5, 5),
+                                  '_target_name': target.Name, '_cursor': (150, 105), 'target_face_index': 0}
+        view.pick = {'Document': self.docname, 'Object': other.Name, 'Component': 'Face1',
+                     'x': 60., 'y': 5., 'z': 5.}
+        old = module.connection_snap; intentions = []
+        try:
+            module.connection_snap = lambda *args, **kwargs: intentions.append(kwargs['intent']) or None
+            self.dialog.find_connection(App.Vector(40, 0, 0), (160, 105))
+            self.assertEqual(intentions[-1]['target_index'], 0)
+            self.dialog.find_connection(App.Vector(40, 0, 0), (180, 105))
+            self.assertEqual(intentions[-1]['target_index'], 1)
+        finally:
+            module.connection_snap = old
+
+    def test_remote_beam_end_cannot_probe_distant_object(self):
+        self.dialog.close(); piece.Length = 1700; self.doc.recompute()
+        self.dialog = module.MagneticMoveDialog(piece, pickup_point=piece.Shape.CenterOfMass)
+        target = self.target(base=App.Vector(1700, 0, 100))
+        pixels = []
+        def pick(position):
+            pixels.append(position)
+            if position[0] > 1500:
+                return {'Document': self.docname, 'Object': target.Name, 'Component': 'Face6'}
+            return None
+        view.pick = pick
+        self.assertEqual(self.dialog.depth_faces(self.dialog.targets(), App.Vector(), (950, 105)), {})
+        self.assertTrue(all(abs(p[0]-950) <= 40 and abs(p[1]-105) <= 40 for p in pixels))
 
     def test_snap_setting_and_s_key_toggle_active_session(self):
         module.set_snap_enabled(True)
@@ -205,8 +270,13 @@ class MagneticTests(unittest.TestCase):
         # bounded FaceN cursor probes are covered by the depth contact test.
         self.dialog.depth_faces = lambda targets, raw_delta, position: {}
         def pick(position):
-            face = next((i+1 for i, f in enumerate(target.Shape.Faces) if abs(f.CenterOfMass.z-10) < 1e-7), 1)
-            return {'Document': self.doc.Name, 'Object': target.Name, 'Component': 'Face' + str(face), 'x': float(position[0]), 'y': float(position[1]), 'z': 10.}
+            x, y = position[0]-100, position[1]-100
+            if abs(x-target.Placement.Base.x) > .001 or not target.Placement.Base.y <= y <= target.Placement.Base.y+target.Width.Value:
+                return None
+            face = next(i+1 for i, f in enumerate(target.Shape.Faces)
+                        if abs(f.CenterOfMass.x-target.Placement.Base.x) < 1e-7)
+            return {'Document': self.doc.Name, 'Object': target.Name, 'Component': 'Face' + str(face),
+                    'x': x, 'y': y, 'z': target.Placement.Base.z+5.}
         view.pick = pick
     def test_inferred_end_connection_refreshes_target_and_commits_once(self):
         target = self.target(); self.pick_target(target)
@@ -290,15 +360,14 @@ class MagneticTests(unittest.TestCase):
                 return {'Document': self.docname, 'Object': target.Name, 'Component': 'Face6'}
             return None
         view.pick = pick
-        self.assertEqual(self.dialog.depth_faces(self.dialog.targets(), App.Vector(), (180, 180)), {0: {5}})
+        self.assertEqual(self.dialog.depth_faces(self.dialog.targets(), App.Vector(), (125, 125)), {0: {5}})
         self.assertIn(wanted, pixels)
-        self.assertLessEqual(len(pixels), 15)
+        self.assertLessEqual(len(pixels), 33)
 
-    def test_depth_probe_ignores_source_hidden_nested_and_edge_hits(self):
+    def test_depth_probe_ignores_source_and_nested_hits(self):
         target = self.target()
         targets = self.dialog.targets()
         for info in ({'Document': self.docname, 'Object': piece.Name, 'Component': 'Face1'},
-                     {'Document': self.docname, 'Object': target.Name, 'Component': 'Edge1'},
                      {'Document': self.docname, 'Object': target.Name, 'Component': 'Face1', 'ParentObject': 'Container'}):
             view.pick = info
             self.assertEqual(self.dialog.depth_faces(targets, App.Vector(), (105, 105)), {})
@@ -317,31 +386,37 @@ class MagneticTests(unittest.TestCase):
         self.assertIsNone(self.dialog.connection)
     def test_connection_is_retained_just_outside_pixel_capture_then_releases(self):
         self.dialog.close(); piece.Length = 100; self.doc.recompute()
-        self.dialog = module.MagneticMoveDialog(piece, pickup_point=piece.Shape.CenterOfMass)
+        self.dialog = module.MagneticMoveDialog(piece, pickup_point=App.Vector(100, 5, 5))
         target = self.target(base=App.Vector(200, 0, 0)); target.Length = 100; self.doc.recompute()
         self.pick_target(target); self.dialog.set_axis('X')
-        self.dialog.move((253, 105))
+        self.dialog.move((293, 105))
         self.assertAlmostEqual(self.dialog.destination.x - self.dialog.source.x, 100)
-        self.dialog.move((269, 105))
+        self.dialog.move((319, 105))
         self.assertIsNotNone(self.dialog.connection)
         self.assertAlmostEqual(self.dialog.destination.x - self.dialog.source.x, 100)
-        self.dialog.move((275, 105)); self.assertIsNone(self.dialog.connection)
-    def test_occluded_target_and_far_depth_are_not_connections(self):
+        self.dialog.move((335, 105)); self.assertIsNone(self.dialog.connection)
+    def test_explicit_foreground_target_cannot_snap_to_rear_object(self):
         target = self.target(); blocker = self.target('Blocker', App.Vector(50, 0, 300))
         self.pick_target(blocker)
+        view.pick = {'Document': self.docname, 'Object': blocker.Name, 'Component': 'Face1'}
         self.dialog.move((148, 105))
-        self.assertIsNone(self.dialog.connection)
-        self.assertAlmostEqual(self.dialog.destination.x, 48)
+        self.assertIsNotNone(self.dialog.connection)
+        self.assertEqual(self.dialog.connection['_target_name'], blocker.Name)
         self.assertLessEqual(self.dialog.capture_distance((148, 105)), 50)
     def test_duplicate_label_does_not_make_occluded_joint_visible(self):
         target = self.target(); blocker = self.target('Blocker', App.Vector(50, 0, 300))
         blocker.Label = target.Label
-        self.pick_target(blocker); self.dialog.move((148, 105))
-        self.assertIsNone(self.dialog.connection)
+        self.pick_target(blocker)
+        view.pick = {'Document': self.docname, 'Object': blocker.Name, 'Component': 'Face1'}
+        self.dialog.move((148, 105))
+        self.assertIsNotNone(self.dialog.connection)
+        self.assertEqual(self.dialog.connection['_target_name'], blocker.Name)
     def test_nested_object_occluding_target_cannot_be_treated_as_empty_pixel(self):
         self.target(); blocker = self.target('Blocker', App.Vector(50, 0, 300))
         container = self.doc.addObject('App::Part', 'Container'); container.addObject(blocker)
-        self.pick_target(blocker); self.dialog.move((148, 105))
+        self.pick_target(blocker)
+        view.pick = {'Document': self.docname, 'Object': blocker.Name, 'Component': 'Face1'}
+        self.dialog.move((148, 105))
         self.assertIsNone(self.dialog.connection)
     def test_coin_first_motion_and_click_use_event_position_without_pickup(self):
         event = coin.SoLocation2Event(); event.setPosition(coin.SbVec2s(125, 110))
