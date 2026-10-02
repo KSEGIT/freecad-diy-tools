@@ -102,6 +102,8 @@ class MagneticTests(unittest.TestCase):
             self.assertAlmostEqual(self.dialog.source.x, 500)
             module.set_snap_enabled(False); self.dialog.move((600, 102))
             self.assertLess((self.dialog.destination-self.dialog.source).Length, 1e-5)
+            self.dialog.set_axis('Y'); self.dialog.move((600, 102))
+            self.assertLess((self.dialog.destination-self.dialog.source).Length, 1e-5)
         finally:
             gui.Selection.getSelectionEx = old
 

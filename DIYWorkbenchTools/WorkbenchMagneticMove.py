@@ -217,6 +217,16 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         """Recognise a nearby source edge without pulling the cursor to its centre."""
         pixel = self.view.getPointOnScreen(point)
         nearby = []
+        scale = max((self.point_on_plane((pixel[0]+8, pixel[1])) -
+                     self.point_on_plane(pixel)).Length, .001)
+        vertices = []
+        for vertex in self.source_shape.Vertexes:
+            candidate = vertex.Point; projected = self.view.getPointOnScreen(candidate)
+            pixels = ((projected[0]-pixel[0])**2 + (projected[1]-pixel[1])**2)**.5
+            if pixels <= 8 and (candidate-point).Length <= scale:
+                vertices.append(((candidate-point).Length, candidate))
+        if vertices:
+            return App.Vector(min(vertices, key=lambda item: item[0])[1])
         for edge in self.source_shape.Edges:
             distance, pairs, _ = Part.Vertex(point).distToShape(edge)
             if not pairs:
@@ -418,6 +428,12 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         square = dx * dx + dy * dy
         if square < 1e-6:
             return constrained_point(self.destination or self.source, self.source, self.axis)
+        # Preserve the offset from the original clicked point to the inferred
+        # edge/corner grip when an axis lock is used.
+        picked_pixel = self.view.getPointOnScreen(self.source+self.pickup_offset)
+        grip_pixel = self.view.getPointOnScreen(self.source)
+        position = (position[0]-picked_pixel[0]+grip_pixel[0],
+                    position[1]-picked_pixel[1]+grip_pixel[1])
         # Ray/axis closest approach provides correct perspective movement.
         width, height = self.view.getSize(); camera = self.view.getCameraNode()
         near, far = camera.getViewVolume(float(width) / max(1, height)).projectPointToLine(
