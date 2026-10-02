@@ -6,6 +6,8 @@ sys.path.insert(0, '/Applications/FreeCAD.app/Contents/Resources/lib')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'DIYWorkbenchTools'))
 import FreeCAD as App
 import Part
+# FreeCAD initialization prepends installed add-ons; test this checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'DIYWorkbenchTools'))
 try:
     from WorkbenchConnectionSnap import connection_snap
 except ModuleNotFoundError:
@@ -114,6 +116,64 @@ class ConnectionTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['key'],previous['key'])
         self.assertIsNone(self.snap((1730,0,0),previous=previous))
+
+
+    def depth_case(self, perspective=False, blocker=False, axis=None):
+        from pivy import coin
+        camera = coin.SoPerspectiveCamera() if perspective else coin.SoOrthographicCamera()
+        direction = App.Vector(1, 1, 1); direction.normalize()
+        camera.orientation = coin.SbRotation(coin.SbVec3f(0,0,-1), coin.SbVec3f(*tuple(direction)))
+        camera.position = coin.SbVec3f(-2000,-2000,-2000)
+        if not perspective:
+            camera.height = 2000
+        volume = camera.getViewVolume(1.5)
+        def project(point):
+            pixel = volume.projectToScreen(coin.SbVec3f(*tuple(point)))
+            return pixel[0]*1500, pixel[1]*1000
+        source = Part.makeBox(44,94,900,App.Vector(300,-300,0))
+        target = Part.makeBox(1700,94,44)
+        desired = App.Vector(0,300,44)
+        pixel = project(source.CenterOfMass + desired)
+        near, far = volume.projectPointToLine(coin.SbVec2f(pixel[0]/1500,pixel[1]/1000))
+        origin = App.Vector(tuple(near)); ray = App.Vector(tuple(far))-origin
+        plane = origin + ray*((source.CenterOfMass-origin).dot(direction)/ray.dot(direction))
+        raw = plane-source.CenterOfMass
+        self.assertGreater((desired-raw).Length, 50)
+        top = next(i for i, face in enumerate(target.Faces) if face.normalAt(0,0).z > .99)
+        targets = [('Rail',target)]
+        if blocker:
+            targets.append(('Blocker',Part.makeBox(44,94,100,App.Vector(300,0,44))))
+        def local_ray(point):
+            px = project(point)
+            a,b = volume.projectPointToLine(coin.SbVec2f(px[0]/1500,px[1]/1000))
+            return App.Vector(tuple(b))-App.Vector(tuple(a))
+        result = connection_snap(source,targets,raw,project,view_direction=local_ray if perspective else direction,
+                                 depth_faces={0:{top}},axis=axis)
+        return source,target,result,desired
+
+    def test_visible_top_face_resolves_orthographic_depth(self):
+        source,target,result,desired = self.depth_case()
+        self.assertIsNotNone(result)
+        self.assertTrue(result['depth'])
+        # Coin camera projection stores float32 coordinates.
+        self.assertLess((result['delta']-desired).Length,.1)
+        self.assertEqual(result['key'][0],0)
+        self.assertLess(source.translated(result['delta']).common(target).Volume,1e-7)
+
+    def test_visible_top_face_resolves_perspective_depth(self):
+        source,target,result,desired = self.depth_case(perspective=True)
+        self.assertIsNotNone(result)
+        self.assertTrue(result['depth'])
+        self.assertAlmostEqual(result['delta'].z,44,places=5)
+        self.assertGreater(source.translated(result['delta']).Faces[4].common(target.Faces[5]).Area,0)
+
+    def test_depth_connection_checks_blocker_outside_initial_broadphase(self):
+        source,target,result,desired = self.depth_case(blocker=True)
+        self.assertTrue(result is None or not result.get('depth'))
+
+    def test_depth_connection_cannot_break_axis_lock(self):
+        source,target,result,desired = self.depth_case(axis='X')
+        self.assertTrue(result is None or not result.get('depth'))
 
 
 if __name__ == '__main__':

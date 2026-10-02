@@ -1,7 +1,8 @@
 """Infer nearby translated joints from complete world-space Part shapes.
 
 The input shapes already carry world placement. No input is changed and no
-rotation is proposed. Projection and a finite world radius both limit capture.
+rotation is proposed. Projection and a finite world radius limit normal capture.
+Explicitly visible target faces can resolve depth along their feature camera ray.
 """
 import math
 import FreeCAD as App
@@ -30,34 +31,57 @@ def _faces(shape):
 
 
 def connection_snap(source_shape, target_shapes, raw_delta, project,
-                    tolerance_px=18, world_tolerance=50, axis=None, previous=None):
+                    tolerance_px=18, world_tolerance=50, axis=None, previous=None,
+                    view_direction=None, depth_faces=None):
     """Return delta/contact points/label/kind/key for a nearby safe joint.
 
     ``target_shapes`` contains (label, world_shape) pairs. ``project`` maps a
     world vector to two pixel coordinates. ``source`` is before translation;
     ``target`` is its proposed destination. ``previous`` provides small capture
     hysteresis only for the same geometric connection, within the world limit.
+    ``depth_faces`` maps ORIGINAL target-list indices to visible zero-based
+    target face indices. These faces may resolve camera depth beyond the world
+    radius, but lateral correction and screen capture remain limited.
+    ``view_direction`` is a vector or callable(world_point) returning its camera
+    ray direction. No depth inference occurs unless both arguments are supplied.
     """
     if axis is not None and axis not in _AXIS:
         raise ValueError('Unknown movement axis: {}'.format(axis))
     if tolerance_px <= 0 or world_tolerance <= 0 or source_shape.isNull():
         return None
+    depth_faces = depth_faces or {}
+    def ray_direction(point):
+        value = view_direction(point) if callable(view_direction) else view_direction
+        if value is None:
+            return None
+        direction = App.Vector(value)
+        if direction.Length <= _EPS:
+            return None
+        direction.normalize()
+        return direction
     raw = App.Vector(raw_delta)
     moved_raw = source_shape.copy()
     moved_raw.translate(raw)
     targets = [(index, label, shape) for index, (label, shape) in enumerate(target_shapes)
                if not shape.isNull() and
-               _near_boxes(moved_raw.BoundBox, shape.BoundBox, world_tolerance)]
+               (_near_boxes(moved_raw.BoundBox, shape.BoundBox, world_tolerance)
+                or (index in depth_faces and view_direction is not None))]
     if not targets:
         return None
     source_faces = _faces(source_shape)
     source_min = min((f[1].Area for f in source_faces), default=0)
     candidates = {}
 
-    def propose(point, destination, kind, identity, label, faces=None):
+    def propose(point, destination, kind, identity, label, faces=None, depth=False):
         correction = destination - point - raw
         distance = correction.Length
-        if distance > world_tolerance + _EPS:
+        lateral = distance
+        if depth:
+            direction = ray_direction(point + raw)
+            if direction is None:
+                return
+            lateral = (correction-direction*correction.dot(direction)).Length
+        if lateral > world_tolerance + _EPS:
             return
         if axis is not None and any(abs(getattr(correction, c)) > _EPS
                                     for c in 'xyz' if c != _AXIS[axis]):
@@ -75,13 +99,16 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
         # Across different joints, prefer smaller full world corrections.
         # The bounded bonus favors a sensible nearby extension or flush fit.
         bonus = {'extension': 8, 'flush': 4, 'face': 0, 'corner': 0}[kind]
-        score = (max(0, distance-bonus), _PRIORITY[kind],
-                 max(0, pixels-(2 if retained else 0)), distance)
+        score = ((0, max(0, pixels-(2 if retained else 0)), max(0,lateral-bonus),
+                  _PRIORITY[kind], distance) if depth else
+                 (1, max(0, distance-bonus), _PRIORITY[kind],
+                  max(0, pixels-(2 if retained else 0)), distance))
         existing = candidates.get(delta_key)
         if existing is None or score < existing[0]:
             candidates[delta_key] = (score, {'delta': delta, 'source': App.Vector(point),
                 'target': App.Vector(destination), 'label': label, 'kind': kind,
-                'key': identity}, faces)
+                'key': identity, 'depth': depth,
+                'target_face_index': identity[3] if depth else None}, faces)
 
     for target_index, label, target in targets:
         target_faces = _faces(target)
@@ -91,6 +118,22 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
                 if sn.dot(tn) > -1 + _EPS:
                     continue
                 separation = (tc-sc-raw).dot(sn)
+                visible_depth = ti in depth_faces.get(target_index, set()) and view_direction is not None
+                face_pair = (sf, tf, False)
+                key = (target_index, label, si, ti)
+                if visible_depth:
+                    direction = ray_direction(sc + raw)
+                    denominator = 0 if direction is None else direction.dot(sn)
+                    if abs(denominator) > _EPS:
+                        destination = sc + raw + direction*(separation/denominator)
+                        propose(sc, destination, 'face', key+('depth_face',), label, face_pair, True)
+                    if (abs(sf.Area-tf.Area) <= _EPS*max(1,sf.Area) and
+                        sf.Area <= source_min*(1+_EPS) and tf.Area <= target_min*(1+_EPS)):
+                        propose(sc, tc, 'extension', key+('depth_extension',), label,
+                                (sf,tf,True), True)
+                    for svi, sp in enumerate(sv):
+                        for tvi, tp in enumerate(tv):
+                            propose(sp, tp, 'flush', key+('depth_flush',svi,tvi), label,face_pair,True)
                 if abs(separation) > world_tolerance:
                     continue
                 if not _near_boxes(sf.translated(raw).BoundBox, tf.BoundBox, world_tolerance):
@@ -126,7 +169,7 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
     groups = {}
     for candidate in candidates.values():
         _score, result, faces = candidate
-        group = result['key'][:4] if faces is not None else result['key']
+        group = (result.get('depth',False),result['key'][:4]) if faces is not None else result['key']
         groups.setdefault(group, []).append(candidate)
     for group in groups.values():
         group.sort(key=lambda c: (c[1]['kind'] != 'extension', c[0]))
@@ -150,8 +193,8 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
         moved = source_shape.copy()
         moved.translate(delta)
         collision = False
-        for _index, _label, target in targets:
-            if _near_boxes(moved.BoundBox, target.BoundBox):
+        for _label, target in target_shapes:
+            if not target.isNull() and _near_boxes(moved.BoundBox, target.BoundBox):
                 if moved.common(target).Volume > _EPS:
                     collision = True
                     break
