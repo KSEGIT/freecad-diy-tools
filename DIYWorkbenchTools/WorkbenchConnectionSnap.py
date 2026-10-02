@@ -54,7 +54,7 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
     source_min = min((f[1].Area for f in source_faces), default=0)
     candidates = {}
 
-    def propose(point, destination, kind, identity, label, faces=None):
+    def propose(point, destination, kind, identity, label, faces=None, joint_distance=None):
         correction = destination - point - raw
         distance = correction.Length
         if distance > world_tolerance + _EPS:
@@ -72,9 +72,12 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
         delta = destination - point
         delta_key = (tuple(round(getattr(delta, c), 6) for c in 'xyz'),
                      bool(faces is not None and faces[2]))
-        # A semantic preference is bounded: a much nearer face still wins.
+        # End-profile alignment is one inferred joint: its in-plane drift
+        # must not make partial contact on that same end defeat a flush fit.
+        # The full correction still obeys both capture limits above.
         bonus = {'extension': 8, 'flush': 4, 'face': 0, 'corner': 0}[kind]
-        score = (max(0, distance-bonus), _PRIORITY[kind],
+        rank_distance = distance if joint_distance is None else joint_distance
+        score = (max(0, rank_distance-bonus), _PRIORITY[kind],
                  max(0, pixels-(2 if retained else 0)), distance)
         existing = candidates.get(delta_key)
         if existing is None or score < existing[0]:
@@ -102,7 +105,7 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
                     sf.Area <= source_min*(1+_EPS) and
                     tf.Area <= target_min*(1+_EPS)):
                     propose(sc, tc, 'extension', key+('extension',), label,
-                            (sf, tf, True))
+                            (sf, tf, True), joint_distance=abs(separation))
                 destination = sc + raw + sn*separation
                 propose(sc, destination, 'face', key+('face',), label, face_pair)
                 # Face corners align the rail end with an upright's boundary,

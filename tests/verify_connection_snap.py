@@ -61,11 +61,11 @@ class ConnectionTests(unittest.TestCase):
         self.assertIsNotNone(connection_snap(self.source,[('Beam',self.target)],
             App.Vector(1720,0,0),lambda p:(p.x*.5,p.y*.5)))
 
-    def test_near_face_beats_substantially_farther_extension(self):
+    def test_matching_end_profile_infers_flush_extension_despite_lateral_drift(self):
         result = connection_snap(self.source, [("Beam",self.target)],
             App.Vector(1702,10,10),lambda p:(p.x,p.y))
         self.assertIsNotNone(result)
-        self.vector(result["delta"], (1700,10,10))
+        self.vector(result["delta"], (1700,0,0))
 
     def test_axis_correction_obeys_each_lock(self):
         for axis, raw, expected in [('X',(1710,5,3),(1700,5,3)),
