@@ -158,6 +158,91 @@ class MagneticTests(unittest.TestCase):
         self.assertEqual(self.dialog.depth_faces(self.dialog.targets(), App.Vector(), (950, 105)), {})
         self.assertTrue(all(abs(p[0]-950) <= 40 and abs(p[1]-105) <= 40 for p in pixels))
 
+    def frame_end_setup(self, depth=0):
+        self.dialog.close()
+        piece.Length=44; piece.Width=94; piece.Height=1500
+        piece.Placement.Base=App.Vector(0,depth,0)
+        lower=self.doc.addObject('Part::Box','LowerRail')
+        lower.Length=1500; lower.Width=94; lower.Height=44
+        upper=self.doc.addObject('Part::Box','UpperRail')
+        upper.Length=1500; upper.Width=94; upper.Height=44
+        upper.Placement.Base=App.Vector(0,0,1456)
+        self.doc.recompute()
+        view.getPointOnScreen=lambda p:(int(round(p.x+100)),int(round(p.z+100)))
+        self.dialog=module.MagneticMoveDialog(piece,pickup_point=App.Vector(22,depth,750))
+        def pick(position):
+            x,z=position[0]-100,position[1]-100
+            if 0<=x<=1500:
+                obj=lower if 0<=z<=44 else upper if 1456<=z<=1500 else None
+                if obj is not None:
+                    return {'Document':self.docname,'Object':obj.Name,'Component':'Face3',
+                            'x':x,'y':0.,'z':z}
+            return None
+        view.pick=pick
+        return lower,upper
+
+    def test_middle_grip_snaps_both_remote_frame_ends_in_front_view(self):
+        lower,upper=self.frame_end_setup()
+        result=self.dialog.find_connection(App.Vector(-48,3,3),(74,853))
+        self.assertIsNotNone(result)
+        self.assertLess((result['delta']-App.Vector(-44,0,0)).Length,1e-6)
+        moved=piece.Shape.translated(result['delta'])
+        for rail in (lower,upper):
+            self.assertLess(moved.distToShape(rail.Shape)[0],1e-6)
+            self.assertLess(moved.common(rail.Shape).Volume,1e-6)
+        self.assertLess(piece.Placement.Base.Length,1e-6)
+
+    def test_middle_grip_frame_snap_retains_joint_and_undo(self):
+        self.frame_end_setup()
+        snap=self.dialog.find_connection(App.Vector(-48,3,3),(74,853))
+        self.assertIsNotNone(snap)
+        self.dialog.connection=snap
+        retained=self.dialog.find_connection(App.Vector(-49,4,4),(73,854))
+        self.assertIsNotNone(retained)
+        self.assertEqual(retained['key'],snap['key'])
+        self.assertFalse(retained['depth'])
+        self.dialog.preview(self.dialog.source+retained['delta'],'Frame')
+        self.dialog.commit()
+        self.assertLess((piece.Placement.Base-App.Vector(-44,0,0)).Length,1e-6)
+        self.doc.undo(); self.doc.recompute()
+        self.assertLess(piece.Placement.Base.Length,1e-6)
+
+    def test_middle_grip_frame_snap_keeps_other_parts_as_blockers(self):
+        self.frame_end_setup()
+        blocker=self.doc.addObject('Part::Box','Blocker')
+        blocker.Length=44;blocker.Width=94;blocker.Height=1500
+        blocker.Placement.Base=App.Vector(-44,0,0)
+        self.doc.recompute()
+        result=self.dialog.find_connection(App.Vector(-48,3,3),(74,853))
+        if result is not None:
+            self.assertLess(piece.Shape.translated(result['delta']).common(blocker.Shape).Volume,1e-6)
+
+    def test_remote_frame_end_does_not_snap_across_camera_depth(self):
+        self.frame_end_setup(depth=200)
+        self.assertIsNone(self.dialog.find_connection(App.Vector(-48,3,3),(74,853)))
+
+    def test_remote_frame_end_does_not_use_occluded_rear_vertex(self):
+        lower,upper=self.frame_end_setup(depth=30)
+        lower.Width=20;upper.Width=20;self.doc.recompute()
+        self.assertIsNone(self.dialog.find_connection(App.Vector(-40,0,3),(82,853)))
+
+    def test_remote_frame_end_requires_visible_target(self):
+        self.frame_end_setup()
+        view.pick=lambda position:{'Document':self.docname,'Object':'OccludingObject','Component':'Face3'}
+        self.assertIsNone(self.dialog.find_connection(App.Vector(-48,3,3),(74,853)))
+
+    def test_middle_grip_frame_snap_respects_axis_lock(self):
+        self.frame_end_setup()
+        self.dialog.axis='X'
+        result=self.dialog.find_connection(App.Vector(-48,3,3),(74,853))
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result['delta'].y,3)
+        self.assertAlmostEqual(result['delta'].z,3)
+
+    def test_remote_frame_end_requires_near_screen_boundaries(self):
+        self.frame_end_setup()
+        self.assertIsNone(self.dialog.find_connection(App.Vector(-80,3,3),(42,853)))
+
     def test_snap_setting_and_s_key_toggle_active_session(self):
         module.set_snap_enabled(True)
         event = coin.SoKeyboardEvent(); event.setKey(coin.SoKeyboardEvent.S)

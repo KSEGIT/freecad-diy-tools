@@ -314,6 +314,60 @@ class MagneticMoveDialog(QtWidgets.QDialog):
                 return intent
         return None
 
+    def boundary_intents(self, targets, raw_delta, capture):
+        """Find visible close part boundaries even when the grip is mid-beam.
+
+        These contacts cannot infer camera depth: both world separation and
+        screen separation must already be small. Keep cursor intent preferred.
+        """
+        moved = self.source_shape.translated(raw_delta)
+        limit = min(capture,50)
+        probes = []
+        for index, (_, shape) in enumerate(targets):
+            if any(getattr(moved.BoundBox,c+'Max')+limit < getattr(shape.BoundBox,c+'Min') or
+                   getattr(shape.BoundBox,c+'Max')+limit < getattr(moved.BoundBox,c+'Min')
+                   for c in ('X','Y','Z')):
+                continue
+            for vi, vertex in enumerate(shape.Vertexes):
+                point = vertex.Point
+                pixel = self.view.getPointOnScreen(point)
+                nearby = []
+                for source_vertex in moved.Vertexes:
+                    distance = (source_vertex.Point-point).Length
+                    if distance > limit:
+                        continue
+                    sp = self.view.getPointOnScreen(source_vertex.Point)
+                    pixels = ((sp[0]-pixel[0])**2+(sp[1]-pixel[1])**2)**.5
+                    if pixels <= 18:
+                        nearby.append((pixels,distance))
+                if nearby:
+                    probes.append((min(nearby),index,vi,point,pixel))
+        probes.sort(key=lambda item:item[0])
+        intents = []
+        for _,index,vi,point,pixel in probes[:32]:
+            info = self.view.getObjectInfo(tuple(int(round(v)) for v in pixel))
+            target = self.target_objects[id(targets[index][1])]
+            if (not info or info.get('Document') != self.docname or
+                info.get('Object') != target.Name or 'ParentObject' in info):
+                continue
+            # A rear vertex can project onto the front of the SAME solid.
+            # Require ownership by the actually picked feature, not just the
+            # object identity, while allowing rounded pixels on a front face.
+            component = info.get('Component','')
+            shape = targets[index][1]
+            visible_vertices = []
+            for prefix,items in (('Face',shape.Faces),('Edge',shape.Edges),('Vertex',shape.Vertexes)):
+                suffix = component[len(prefix):] if component.startswith(prefix) else ''
+                if suffix.isdigit() and 1 <= int(suffix) <= len(items):
+                    feature = items[int(suffix)-1]
+                    visible_vertices = [feature] if prefix == 'Vertex' else feature.Vertexes
+                    break
+            if not any(vertex.isSame(shape.Vertexes[vi]) for vertex in visible_vertices):
+                continue
+            intents.append({'target_index':index,'point':point,'component':'Vertex'+str(vi+1),
+                            'source_pickup':App.Vector(self.source),'boundary':True})
+        return intents
+
     def depth_faces(self, targets, raw_delta, position):
         intent = self.hit_intent(targets, position) or self.local_intent(targets, raw_delta, position)
         return {intent['target_index']: intent['faces']} if intent is not None else {}
@@ -330,6 +384,12 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         if ((position[0]-acquired[0])**2+(position[1]-acquired[1])**2)**.5 > 26:
             return None
         target = self.connection['target']
+        boundary = self.connection.get('_boundary_component')
+        if boundary:
+            # A middle grip can be far from this contact. Retain by cursor
+            # movement; the engine still checks bounded world/screen correction.
+            return {'target_index':index,'point':target,'component':boundary,
+                    'source_pickup':App.Vector(self.source),'boundary':True}
         pixel = self.view.getPointOnScreen(target)
         distances = [((pixel[0]-position[0])**2+(pixel[1]-position[1])**2)**.5]
         for edge in targets[index][1].Edges:
@@ -367,38 +427,40 @@ class MagneticMoveDialog(QtWidgets.QDialog):
             intent = retained
         else:
             intent = direct or retained or self.local_intent(targets, raw_delta, position)
-        if intent is None:
-            return None
-        index = intent['target_index']
-        intended_faces = intent.get('faces') or self.component_faces(targets[index][1], intent['component'])
-        faces = {index: intended_faces} if intended_faces else {}
         capture = self.capture_distance(position)
-        for attempt in range(32):
-            snap = connection_snap(self.source_shape, targets, raw_delta,
-                                   self.view.getPointOnScreen, world_tolerance=capture,
-                                   axis=self.axis, previous=previous,
-                                   view_direction=self.view_direction, depth_faces=faces, excluded_keys=excluded_keys, intent=intent)
-            if snap is None:
-                return None
-            pixel = self.view.getPointOnScreen(snap['target'])
-            info = self.view.getObjectInfo(tuple(int(round(v)) for v in pixel))
-            index = snap['key'][0]
-            target_obj = self.target_objects[id(targets[index][1])]
-            face_index = snap.get('target_face_index')
-            component = info.get('Component', '') if info else ''
-            same_target = (info and info.get('Document') == self.docname
-                           and info.get('Object') == target_obj.Name and 'ParentObject' not in info)
-            same_face = (face_index in self.component_faces(targets[index][1], component)) if isinstance(face_index, int) else True
-            # Depth candidates must stay on the probed visible contact face.
-            # Ordinary short snaps retain silhouette fallback at empty pixels.
-            depth = snap.get('depth', False)
-            if ((same_target and (not depth or same_face)) or (not info and not depth)):
-                snap['_target_name'] = target_obj.Name
-                snap['_cursor'] = (self.connection.get('_cursor', position)
-                                   if self.connection and self.connection.get('_target_name') == target_obj.Name else position)
-                return snap
-            excluded_keys.add(snap['key'])
-            previous = None
+        intents = [intent] if intent is not None else self.boundary_intents(targets,raw_delta,capture)
+        for intent in intents:
+            index = intent['target_index']
+            intended_faces = intent.get('faces') or self.component_faces(targets[index][1], intent['component'])
+            faces = {index: intended_faces} if intended_faces and not intent.get('boundary') else {}
+            for attempt in range(32):
+                snap = connection_snap(self.source_shape, targets, raw_delta,
+                                       self.view.getPointOnScreen, world_tolerance=min(capture,50) if intent.get('boundary') else capture,
+                                       axis=self.axis, previous=previous,
+                                       view_direction=self.view_direction, depth_faces=faces, excluded_keys=excluded_keys, intent=intent)
+                if snap is None:
+                    break
+                pixel = self.view.getPointOnScreen(snap['target'])
+                info = self.view.getObjectInfo(tuple(int(round(v)) for v in pixel))
+                index = snap['key'][0]
+                target_obj = self.target_objects[id(targets[index][1])]
+                face_index = snap.get('target_face_index')
+                component = info.get('Component', '') if info else ''
+                same_target = (info and info.get('Document') == self.docname
+                               and info.get('Object') == target_obj.Name and 'ParentObject' not in info)
+                same_face = (face_index in self.component_faces(targets[index][1], component)) if isinstance(face_index, int) else True
+                # Depth candidates must stay on the probed visible contact face.
+                # Ordinary short snaps retain silhouette fallback at empty pixels.
+                depth = snap.get('depth', False)
+                if ((same_target and (not depth or same_face)) or (not info and not depth)):
+                    snap['_target_name'] = target_obj.Name
+                    if intent.get('boundary'):
+                        snap['_boundary_component'] = intent['component']
+                    snap['_cursor'] = (self.connection.get('_cursor', position)
+                                       if self.connection and self.connection.get('_target_name') == target_obj.Name else position)
+                    return snap
+                excluded_keys.add(snap['key'])
+                previous = None
         return None
 
     def point_on_plane(self, position):
