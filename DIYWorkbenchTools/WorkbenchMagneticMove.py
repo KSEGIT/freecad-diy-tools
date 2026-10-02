@@ -6,6 +6,7 @@ installed 1.1.3 commit 145529fe741292ff0b3977a01195bf0247425794.
 from pathlib import Path
 import FreeCAD as App
 import FreeCADGui as Gui
+import Part
 from pivy import coin
 from PySide import QtCore, QtGui
 try:
@@ -64,8 +65,16 @@ def _workbench():
     return Gui.activeWorkbench().name()
 
 
+def _picked_point(part):
+    """Native selection points are already world coordinates."""
+    for selected in Gui.Selection.getSelectionEx():
+        if selected.Object is part and selected.PickedPoints:
+            return App.Vector(selected.PickedPoints[0])
+    return None
+
+
 class MagneticMoveDialog(QtWidgets.QDialog):
-    def __init__(self, part):
+    def __init__(self, part, pickup_point=None):
         super(MagneticMoveDialog, self).__init__(Gui.getMainWindow())
         self.part, self.doc = part, part.Document
         self.docname, self.objname = self.doc.Name, part.Name
@@ -74,7 +83,10 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         self.view = Gui.activeDocument().activeView()
         self.workbench = _workbench()
         self.source_shape = part.Shape.copy()
-        self.source = App.Vector(self.source_shape.CenterOfMass)
+        pickup_point = _picked_point(part) if pickup_point is None else pickup_point
+        self.has_pickup = pickup_point is not None
+        self.source = App.Vector(pickup_point if self.has_pickup else self.source_shape.CenterOfMass)
+        self.pointer_start = None
         self.destination = App.Vector(self.source)
         self.connection = None
         self.last_position = None
@@ -195,26 +207,67 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         c = self.point_on_plane((position[0], position[1] + 20))
         return max(0.001, min(50., max((a-b).Length, (a-c).Length)))
 
+    def depth_faces(self, targets, raw_delta, position):
+        """Permit depth travel only towards faces actually under the moving solid."""
+        owners = {self.target_objects[id(shape)].Name: i for i, (_, shape) in enumerate(targets)}
+        probes = [position]
+        probes.extend(self.view.getPointOnScreen(f.CenterOfMass + raw_delta)
+                      for f in self.source_shape.Faces if isinstance(f.Surface, Part.Plane))
+        probes.extend(self.view.getPointOnScreen(v.Point + raw_delta)
+                      for v in self.source_shape.Vertexes)
+        faces = {}; seen = set()
+        for pixel in probes:
+            pixel = tuple(int(round(v)) for v in pixel)
+            if pixel in seen:
+                continue
+            seen.add(pixel)
+            if len(seen) > 15:
+                break
+            info = self.view.getObjectInfo(pixel)
+            if not info or info.get('Document') != self.docname or 'ParentObject' in info:
+                continue
+            index = owners.get(info.get('Object'))
+            component = info.get('Component', '')
+            if index is not None and component.startswith('Face') and component[4:].isdigit():
+                faces.setdefault(index, set()).add(int(component[4:]) - 1)
+        return faces
+
+    def view_direction(self, point):
+        pixel = self.view.getPointOnScreen(point)
+        width, height = self.view.getSize()
+        volume = self.view.getCameraNode().getViewVolume(float(width) / max(1, height))
+        near, far = volume.projectPointToLine(coin.SbVec2f(float(pixel[0]) / max(1, width),
+                                                        float(pixel[1]) / max(1, height)))
+        return App.Vector(tuple(far)) - App.Vector(tuple(near))
+
     def find_connection(self, raw_delta, position):
         targets = self.targets()
         previous = self.connection
-        while targets:
+        excluded_keys = set()
+        faces = self.depth_faces(targets, raw_delta, position)
+        capture = self.capture_distance(position)
+        for attempt in range(32):
             snap = connection_snap(self.source_shape, targets, raw_delta,
-                                   self.view.getPointOnScreen, world_tolerance=self.capture_distance(position),
-                                   axis=self.axis, previous=previous)
+                                   self.view.getPointOnScreen, world_tolerance=capture,
+                                   axis=self.axis, previous=previous,
+                                   view_direction=self.view_direction, depth_faces=faces, excluded_keys=excluded_keys)
             if snap is None:
                 return None
-            # Face centres can project onto another face of the same solid.
-            # Reject occlusion by a different solid; silhouette rounding may miss.
             pixel = self.view.getPointOnScreen(snap['target'])
-            info = self.view.getObjectInfo(tuple(int(v) for v in pixel))
+            info = self.view.getObjectInfo(tuple(int(round(v)) for v in pixel))
             index = snap['key'][0]
             target_obj = self.target_objects[id(targets[index][1])]
-            if (not info or (info.get('Document') == self.docname
-                             and info.get('Object') == target_obj.Name
-                             and 'ParentObject' not in info)):
+            face_index = snap.get('target_face_index')
+            component = info.get('Component', '') if info else ''
+            same_target = (info and info.get('Document') == self.docname
+                           and info.get('Object') == target_obj.Name and 'ParentObject' not in info)
+            same_face = (component == 'Face' + str(face_index + 1)) if isinstance(face_index, int) else True
+            # Depth candidates must stay on the probed visible contact face.
+            # Ordinary short snaps retain silhouette fallback at empty pixels.
+            depth = snap.get('depth', False)
+            if ((same_target and (not depth or same_face)) or (not info and not depth)):
                 return snap
-            targets.pop(index)
+            excluded_keys.add(snap['key'])
             previous = None
         return None
 
@@ -262,7 +315,16 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         if self.closed:
             return
         self.last_position = position
-        point = self.axis_point(position, self.point_on_plane(position))
+        plane_point = self.point_on_plane(position)
+        point = self.axis_point(position, plane_point)
+        if not self.has_pickup:
+            if self.pointer_start is None:
+                self.pointer_start = position
+                self.connection = None
+                self.preview(self.source, 'Free move')
+                return
+            initial = self.axis_point(self.pointer_start, self.point_on_plane(self.pointer_start))
+            point = self.source + point - initial
         # Preserve native navigation: modifiers are handled before reaching here.
         snap = self.find_connection(point - self.source, position) if snap_enabled() else None
         self.connection = snap

@@ -26,7 +26,7 @@ gui.getMainWindow = lambda: None
 gui.activeDocument = lambda: types.SimpleNamespace(activeView=lambda: view, getInEdit=lambda: None)
 gui.activeWorkbench = lambda: types.SimpleNamespace(name=lambda: 'DIYWorkbench')
 selection = []
-gui.Selection = types.SimpleNamespace(clearSelection=selection.clear, getSelection=lambda: list(selection))
+gui.Selection = types.SimpleNamespace(clearSelection=selection.clear, getSelection=lambda: list(selection), getSelectionEx=lambda: [])
 gui.addCommand = lambda *args: None
 sys.modules['FreeCADGui'] = gui
 
@@ -39,7 +39,7 @@ class MagneticTests(unittest.TestCase):
         view = View()
         selection[:] = [piece]
         module.set_snap_enabled(True)
-        self.dialog = module.MagneticMoveDialog(piece)
+        self.dialog = module.MagneticMoveDialog(piece, pickup_point=piece.Shape.CenterOfMass)
     def tearDown(self):
         if not self.dialog.closed:
             self.dialog.close()
@@ -62,6 +62,35 @@ class MagneticTests(unittest.TestCase):
         self.assertLess((piece.Placement.Base - App.Vector(point.x-5, point.y-5, 0)).Length, 1e-7)
         self.assertTrue(self.dialog.closed)
         self.doc.undo(); self.assertLess(piece.Placement.Base.Length, 1e-7)
+    def test_tree_selection_first_motion_does_not_jump(self):
+        self.dialog.close()
+        self.dialog = module.MagneticMoveDialog(piece)
+        module.set_snap_enabled(False)
+        self.dialog.move((160, 145))
+        self.assertLess((self.dialog.destination - self.dialog.source).Length, 1e-7)
+        self.dialog.move((170, 155))
+        self.assertAlmostEqual(self.dialog.destination.x - self.dialog.source.x, 10, places=5)
+        self.assertAlmostEqual(self.dialog.destination.y - self.dialog.source.y, 10, places=4)
+        self.dialog.click((170, 155))
+        self.assertAlmostEqual(piece.Placement.Base.x, 10, places=5)
+        self.doc.undo(); self.assertLess(piece.Placement.Base.Length, 1e-7)
+
+    def test_native_picked_point_is_preserved_before_selection_clear(self):
+        self.dialog.close()
+        selected = types.SimpleNamespace(Object=piece, PickedPoints=[App.Vector(10, 3, 7)])
+        original = gui.Selection.getSelectionEx
+        try:
+            gui.Selection.getSelectionEx = lambda: [selected] if selection else []
+            selection[:] = [piece]
+            self.dialog = module.MagneticMoveDialog(piece)
+            self.assertEqual(tuple(self.dialog.source), (10., 3., 7.))
+            self.assertTrue(self.dialog.has_pickup)
+            self.assertEqual(selection, [])
+            self.dialog.move((110, 103))
+            self.assertLess((self.dialog.destination - self.dialog.source).Length, 1e-5)
+        finally:
+            gui.Selection.getSelectionEx = original
+
     def test_snap_setting_and_s_key_toggle_active_session(self):
         module.set_snap_enabled(True)
         event = coin.SoKeyboardEvent(); event.setKey(coin.SoKeyboardEvent.S)
@@ -115,7 +144,7 @@ class MagneticTests(unittest.TestCase):
         original = gui.getMainWindow
         try:
             gui.getMainWindow = lambda: window
-            self.dialog = module.MagneticMoveDialog(piece)
+            self.dialog = module.MagneticMoveDialog(piece, pickup_point=piece.Shape.CenterOfMass)
             edge = window.mapToGlobal(window.rect().topRight())
             self.assertEqual(self.dialog.x(), edge.x()-390)
             self.assertEqual(self.dialog.y(), edge.y()+70)
@@ -136,7 +165,7 @@ class MagneticTests(unittest.TestCase):
     def test_axis_distance_commit_is_one_undo_and_keeps_rotation(self):
         self.dialog.close()
         piece.Placement = App.Placement(App.Vector(), App.Rotation(App.Vector(0, 0, 1), 30))
-        self.doc.recompute(); self.dialog = module.MagneticMoveDialog(piece); rotation = piece.Placement.Rotation
+        self.doc.recompute(); self.dialog = module.MagneticMoveDialog(piece, pickup_point=piece.Shape.CenterOfMass); rotation = piece.Placement.Rotation
         self.dialog.set_axis('X'); self.dialog.distance.setValue(-25)
         self.dialog.apply_distance()
         self.assertAlmostEqual(piece.Placement.Base.x, -25)
@@ -172,6 +201,9 @@ class MagneticTests(unittest.TestCase):
         target = self.doc.addObject('Part::Box', name); target.Placement.Base = base
         self.doc.recompute(); return target
     def pick_target(self, target):
+        # These fixtures isolate the existing short-distance path. Actual
+        # bounded FaceN cursor probes are covered by the depth contact test.
+        self.dialog.depth_faces = lambda targets, raw_delta, position: {}
         def pick(position):
             face = next((i+1 for i, f in enumerate(target.Shape.Faces) if abs(f.CenterOfMass.z-10) < 1e-7), 1)
             return {'Document': self.doc.Name, 'Object': target.Name, 'Component': 'Face' + str(face), 'x': float(position[0]), 'y': float(position[1]), 'z': 10.}
@@ -189,6 +221,88 @@ class MagneticTests(unittest.TestCase):
         self.assertAlmostEqual(piece.Placement.Base.x, 65)
         self.assertTrue(self.dialog.closed)
         self.doc.undo(); self.assertLess(piece.Placement.Base.Length, 1e-7)
+    def test_visible_face_probe_allows_real_camera_depth_contact_beyond_50_mm(self):
+        target = self.target(base=App.Vector(50, 0, 100))
+        view.camera.position.setValue(0, 0, 1000)
+        top = next(i for i, f in enumerate(target.Shape.Faces)
+                   if abs(f.CenterOfMass.z - 110) < 1e-7)
+        def pick(position):
+            x, y = position[0] - 100, position[1] - 100
+            if 50 <= x <= 60 and 0 <= y <= 10:
+                return {'Document': self.docname, 'Object': target.Name,
+                        'Component': 'Face' + str(top + 1), 'x': x, 'y': y, 'z': 110.}
+            return None
+        view.pick = pick
+        self.dialog.move((155, 105))
+        self.assertIsNotNone(self.dialog.connection)
+        self.assertTrue(self.dialog.connection['depth'])
+        self.assertGreater(abs(self.dialog.connection['delta'].z), 50)
+        moved = piece.Shape.copy(); moved.translate(self.dialog.connection['delta'])
+        self.assertLess(moved.common(target.Shape).Volume, 1e-7)
+        self.assertLess(moved.distToShape(target.Shape)[0], 1e-7)
+        self.dialog.click((155, 105))
+        self.assertTrue(self.dialog.closed)
+        self.doc.undo(); self.assertLess(piece.Placement.Base.Length, 1e-7)
+
+    def test_depth_contact_cannot_use_a_hidden_rear_face(self):
+        target = self.target()
+        top = next(i for i, f in enumerate(target.Shape.Faces)
+                   if abs(f.CenterOfMass.z - 10) < 1e-7)
+        view.pick = {'Document': self.docname, 'Object': target.Name,
+                     'Component': 'Face' + str(top + 1)}
+        old = module.connection_snap
+        try:
+            module.connection_snap = lambda *args, **kwargs: {
+                'delta': App.Vector(50, 0, 100), 'source': App.Vector(),
+                'target': App.Vector(50, 0, 100), 'label': target.Label,
+                'kind': 'face', 'key': (0, target.Label, 1, 0),
+                'depth': True, 'target_face_index': (top + 1) % 6}
+            self.assertIsNone(self.dialog.find_connection(App.Vector(50, 0, 0), (150, 100)))
+        finally:
+            module.connection_snap = old
+
+    def test_occlusion_retry_keeps_all_solids_as_collision_obstacles(self):
+        target = self.target()
+        blocker = self.target('Blocker', App.Vector(50, 0, 300))
+        view.pick = {'Document': self.docname, 'Object': blocker.Name, 'Component': 'Face1'}
+        old = module.connection_snap; calls = []
+        try:
+            def candidate(source, targets, delta, project, **kwargs):
+                calls.append((len(targets), set(kwargs['excluded_keys'])))
+                if len(calls) > 1:
+                    return None
+                return {'delta': App.Vector(40, 0, 0), 'source': App.Vector(),
+                        'target': App.Vector(50, 0, 0), 'label': target.Label,
+                        'kind': 'face', 'key': (0, target.Label, 1, 0), 'depth': False}
+            module.connection_snap = candidate
+            self.assertIsNone(self.dialog.find_connection(App.Vector(43, 0, 0), (148, 105)))
+            self.assertEqual(calls, [(2, set()), (2, {(0, target.Label, 1, 0)})])
+        finally:
+            module.connection_snap = old
+
+    def test_all_box_face_centres_are_probed_with_bounded_budget(self):
+        target = self.target()
+        wanted = tuple(int(round(v)) for v in view.getPointOnScreen(self.dialog.source_shape.Faces[-1].CenterOfMass))
+        pixels = []
+        def pick(position):
+            pixels.append(position)
+            if position == wanted:
+                return {'Document': self.docname, 'Object': target.Name, 'Component': 'Face6'}
+            return None
+        view.pick = pick
+        self.assertEqual(self.dialog.depth_faces(self.dialog.targets(), App.Vector(), (180, 180)), {0: {5}})
+        self.assertIn(wanted, pixels)
+        self.assertLessEqual(len(pixels), 15)
+
+    def test_depth_probe_ignores_source_hidden_nested_and_edge_hits(self):
+        target = self.target()
+        targets = self.dialog.targets()
+        for info in ({'Document': self.docname, 'Object': piece.Name, 'Component': 'Face1'},
+                     {'Document': self.docname, 'Object': target.Name, 'Component': 'Edge1'},
+                     {'Document': self.docname, 'Object': target.Name, 'Component': 'Face1', 'ParentObject': 'Container'}):
+            view.pick = info
+            self.assertEqual(self.dialog.depth_faces(targets, App.Vector(), (105, 105)), {})
+
     def test_toggle_off_releases_current_snap_and_moving_away_stays_free(self):
         target = self.target(); self.pick_target(target)
         self.dialog.move((148, 105))
@@ -203,7 +317,7 @@ class MagneticTests(unittest.TestCase):
         self.assertIsNone(self.dialog.connection)
     def test_connection_is_retained_just_outside_pixel_capture_then_releases(self):
         self.dialog.close(); piece.Length = 100; self.doc.recompute()
-        self.dialog = module.MagneticMoveDialog(piece)
+        self.dialog = module.MagneticMoveDialog(piece, pickup_point=piece.Shape.CenterOfMass)
         target = self.target(base=App.Vector(200, 0, 0)); target.Length = 100; self.doc.recompute()
         self.pick_target(target); self.dialog.set_axis('X')
         self.dialog.move((253, 105))
@@ -308,6 +422,8 @@ if __name__ == '__main__':
     for name in ('WorkbenchPlacement', 'WorkbenchMagneticGeometry', 'WorkbenchMagneticMove'):
         sys.modules.pop(name, None)
     import WorkbenchMagneticMove as module
+    import inspect
+    assert Path(inspect.getsourcefile(module.connection_snap)).parent == path.parent
     # Visibility is view-provider state; headless FreeCAD has no ViewObjects.
     module._visible = lambda obj: view.visibility.get(obj.Name, True)
     unittest.main()
