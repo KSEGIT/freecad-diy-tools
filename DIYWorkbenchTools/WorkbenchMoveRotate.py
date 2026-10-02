@@ -25,29 +25,14 @@ class MovePart:
     def GetResources(self):
         return {'Pixmap': str(Path(__file__).with_name('WorkbenchMove.svg')),
                 'MenuText': 'Move part',
-                'ToolTip': 'Select one solid part, then move it with the 3D arrows'}
+                'ToolTip': 'Select one solid part, move with the cursor and click to place'}
 
     def IsActive(self):
         return App.ActiveDocument is not None
 
     def Activated(self):
-        try:
-            part = selected_piece()
-            if App.ActiveDocument is not part.Document:
-                raise ValueError('Activate the part document first.')
-            close_editor()
-            previous = getattr(Gui, '_workbench_rotate_dialog', None)
-            if previous is not None:
-                previous.close()
-            Gui.Selection.clearSelection()
-            Gui.Selection.addSelection(part)
-            preferences = App.ParamGet('User parameter:BaseApp/History/Dragger')
-            # Defaults apply only when absent; preserve the user's chosen steps.
-            preferences.SetFloat('LastRotationIncrement', preferences.GetFloat('LastRotationIncrement', 90))
-            preferences.SetFloat('LastTranslationIncrement', preferences.GetFloat('LastTranslationIncrement', 1))
-            Gui.runCommand('Std_TransformManip', 0)
-        except Exception as error:
-            warning(error)
+        from WorkbenchMagneticMove import start_move
+        start_move()
 
 
 class RotateDialog(QtWidgets.QDialog):
@@ -125,6 +110,9 @@ class RotatePart:
             if App.ActiveDocument is not part.Document:
                 raise ValueError('Activate the part document first.')
             close_editor()
+            moving = getattr(Gui, '_workbench_magnetic_move_dialog', None)
+            if moving is not None:
+                moving.close()
             previous = getattr(Gui, '_workbench_rotate_dialog', None)
             if previous is not None:
                 previous.close()

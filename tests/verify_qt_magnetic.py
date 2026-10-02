@@ -4,18 +4,18 @@ import sys, types, unittest
 sys.path.insert(0, '/Applications/FreeCAD.app/Contents/Resources/lib')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'DIYWorkbenchTools'))
 import FreeCAD as App, Part
-from PySide import QtWidgets, QtCore
+from PySide import QtWidgets, QtCore, QtGui
 from pivy import coin
 application = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 class View:
     def __init__(self):
         self.scene = coin.SoSeparator(); self.callbacks = []; self.pick = None
         self.visibility = {}
-        self.camera = coin.SoOrthographicCamera(); self.camera.position.setValue(0, 0, 100)
+        self.camera = coin.SoOrthographicCamera(); self.camera.position.setValue(0, 0, 100); self.camera.height.setValue(200)
     def getSceneGraph(self): return self.scene
     def getCameraNode(self): return self.camera
     def getSize(self): return (200, 200)
-    def getPointOnScreen(self, point): return (int(round(point.x)), int(round(point.y)))
+    def getPointOnScreen(self, point): return (int(round(point.x+100)), int(round(point.y+100)))
     def getObjectInfo(self, position): return self.pick(position) if callable(self.pick) else self.pick
     def addEventCallbackPivy(self, kind, callback):
         self.callbacks.append((kind, callback)); return callback
@@ -38,25 +38,97 @@ class MagneticTests(unittest.TestCase):
         piece = self.doc.addObject('Part::Box', 'Source'); self.doc.recompute()
         view = View()
         selection[:] = [piece]
+        module.set_snap_enabled(True)
         self.dialog = module.MagneticMoveDialog(piece)
     def tearDown(self):
-        self.dialog.close()
+        if not self.dialog.closed:
+            self.dialog.close()
         active = getattr(gui, '_workbench_magnetic_move_dialog', None)
         if active is not None:
             active.close()
         if self.docname in App.listDocuments():
             App.closeDocument(self.docname)
-    def anchor(self):
-        view.pick = {'Document': self.doc.Name, 'Object': piece.Name, 'Component': 'Vertex1', 'x': 0., 'y': 0., 'z': 0.}
-        self.dialog.click((0, 0))
-        self.assertIsNotNone(self.dialog.source)
+    def test_starts_with_centre_and_visible_ghost_without_source_click(self):
+        self.assertEqual(tuple(self.dialog.source), (5., 5., 5.))
+        self.assertEqual(self.dialog.ghost_switch.whichChild.getValue(), coin.SO_SWITCH_ALL)
+        self.assertNotIn('corner', self.dialog.message.text().lower())
+        self.assertLessEqual(self.dialog.maximumWidth(), 380)
+    def test_first_motion_and_single_click_commit_then_undo(self):
+        point = self.dialog.point_on_plane((125, 110))
+        self.dialog.move((125, 110))
+        self.assertLess((self.dialog.destination - point).Length, 1e-7)
+        self.assertEqual(tuple(piece.Placement.Base), (0., 0., 0.))
+        self.dialog.click((125, 110))
+        self.assertLess((piece.Placement.Base - App.Vector(point.x-5, point.y-5, 0)).Length, 1e-7)
+        self.assertTrue(self.dialog.closed)
+        self.doc.undo(); self.assertLess(piece.Placement.Base.Length, 1e-7)
+    def test_snap_setting_and_s_key_toggle_active_session(self):
+        module.set_snap_enabled(True)
+        event = coin.SoKeyboardEvent(); event.setKey(coin.SoKeyboardEvent.S)
+        event.setState(coin.SoButtonEvent.DOWN)
+        callback = types.SimpleNamespace(getEvent=lambda: event, setHandled=lambda: None)
+        self.dialog.handle_event(callback)
+        self.assertFalse(module.snap_enabled())
+        self.assertFalse(self.dialog.snap_button.isChecked())
+        module.MagneticMove().Activated()
+        self.assertTrue(module.snap_enabled()); self.assertTrue(self.dialog.snap_button.isChecked())
+    def test_checkbox_and_command_keep_native_action_in_sync_without_restarting(self):
+        action = QtGui.QAction('Auto snap', self.dialog)
+        gui.Command = types.SimpleNamespace(get=lambda name: types.SimpleNamespace(getAction=lambda: [action]))
+        try:
+            module.set_snap_enabled(True)
+            self.assertTrue(action.isCheckable()); self.assertTrue(action.isChecked())
+            self.dialog.snap_button.setChecked(False)
+            self.assertFalse(action.isChecked())
+            module.MagneticMove().Activated(1)
+            self.assertTrue(action.isChecked()); self.assertTrue(self.dialog.snap_button.isChecked())
+            self.assertFalse(self.dialog.closed)
+            self.assertEqual(len(view.callbacks), 1)
+            self.assertEqual(tuple(piece.Placement.Base), (0., 0., 0.))
+        finally:
+            del gui.Command
+            gui._workbench_snap_actions = []
+    def test_reentry_reuses_source_and_removes_old_session(self):
+        gui._workbench_magnetic_move_dialog = self.dialog
+        module.start_move()
+        replacement = gui._workbench_magnetic_move_dialog
+        self.assertTrue(self.dialog.closed); self.assertIs(replacement.part, piece)
+        self.assertEqual(len(view.callbacks), 1)
+        replacement.close()
+    def test_invalid_reentry_closes_old_session_before_selection_notice(self):
+        self.doc.removeObject(piece.Name)
+        original = QtWidgets.QMessageBox.information; notices = []
+        try:
+            def notice(*args):
+                self.assertTrue(self.dialog.closed)
+                self.assertEqual(view.callbacks, []); self.assertEqual(view.scene.getNumChildren(), 0)
+                notices.append(args[-1])
+            QtWidgets.QMessageBox.information = notice
+            module.start_move()
+            self.assertEqual(len(notices), 1)
+            self.assertIsNone(gui._workbench_magnetic_move_dialog)
+        finally:
+            QtWidgets.QMessageBox.information = original
+    def test_compact_controls_are_placed_at_main_window_edge(self):
+        self.dialog.close()
+        window = QtWidgets.QMainWindow(); window.setGeometry(100, 100, 1000, 700)
+        original = gui.getMainWindow
+        try:
+            gui.getMainWindow = lambda: window
+            self.dialog = module.MagneticMoveDialog(piece)
+            edge = window.mapToGlobal(window.rect().topRight())
+            self.assertEqual(self.dialog.x(), edge.x()-390)
+            self.assertEqual(self.dialog.y(), edge.y()+70)
+            self.assertLessEqual(self.dialog.maximumWidth(), 380)
+        finally:
+            self.dialog.close(); gui.getMainWindow = original; window.close()
     def test_preview_cancel_never_changes_placement_and_removes_callbacks(self):
         original = piece.Placement
-        self.anchor(); self.dialog.preview(App.Vector(12, 7, 4), 'Cursor')
+        self.dialog.preview(App.Vector(12, 7, 4), 'Cursor')
         self.assertEqual(piece.Placement, original)
         self.assertEqual(view.scene.getNumChildren(), 1)
         self.assertEqual(self.dialog.preview_root.getChild(0).style.getValue(), coin.SoPickStyle.UNPICKABLE)
-        self.assertIn('12.00', self.dialog.message.text())
+        self.assertIn('7.00', self.dialog.message.text())
         self.dialog.close()
         self.assertEqual(view.scene.getNumChildren(), 0)
         self.assertEqual(view.callbacks, [])
@@ -65,17 +137,13 @@ class MagneticTests(unittest.TestCase):
         self.dialog.close()
         piece.Placement = App.Placement(App.Vector(), App.Rotation(App.Vector(0, 0, 1), 30))
         self.doc.recompute(); self.dialog = module.MagneticMoveDialog(piece); rotation = piece.Placement.Rotation
-        self.anchor(); self.dialog.set_axis('X'); self.dialog.distance.setValue(-25)
+        self.dialog.set_axis('X'); self.dialog.distance.setValue(-25)
         self.dialog.apply_distance()
         self.assertAlmostEqual(piece.Placement.Base.x, -25)
         self.assertAlmostEqual(piece.Placement.Base.y, 0)
         self.assertEqual(piece.Placement.Rotation, rotation)
         self.assertTrue(self.dialog.closed); self.doc.undo()
         self.assertLess(piece.Placement.Base.Length, 1e-7)
-    def test_wrong_source_click_cannot_choose_anchor(self):
-        other = self.doc.addObject('Part::Box', 'Other'); self.doc.recompute()
-        view.pick = {'Document': self.doc.Name, 'Object': other.Name, 'Component': 'Vertex1', 'x': 0., 'y': 0., 'z': 0.}
-        self.dialog.click((0, 0)); self.assertIsNone(self.dialog.source)
     def test_navigation_mouse_buttons_are_not_consumed(self):
         for button in (coin.SoMouseButtonEvent.BUTTON2, coin.SoMouseButtonEvent.BUTTON3):
             event = coin.SoMouseButtonEvent(); event.setButton(button); event.setState(coin.SoButtonEvent.DOWN)
@@ -92,7 +160,7 @@ class MagneticTests(unittest.TestCase):
         self.assertTrue(self.dialog.closed); self.assertEqual(old.callbacks, [])
         self.assertEqual(old.scene.getNumChildren(), 0)
     def test_perspective_cursor_uses_plane_through_anchor(self):
-        self.anchor(); self.dialog.source = App.Vector(3, 4, 20)
+        self.dialog.source = App.Vector(3, 4, 20)
         view.camera = coin.SoPerspectiveCamera(); view.camera.position.setValue(0, 0, 100)
         point = self.dialog.point_on_plane((100, 100))
         self.assertAlmostEqual(point.z, 20, places=5)
@@ -108,49 +176,83 @@ class MagneticTests(unittest.TestCase):
             face = next((i+1 for i, f in enumerate(target.Shape.Faces) if abs(f.CenterOfMass.z-10) < 1e-7), 1)
             return {'Document': self.doc.Name, 'Object': target.Name, 'Component': 'Face' + str(face), 'x': float(position[0]), 'y': float(position[1]), 'z': 10.}
         view.pick = pick
-    def test_source_uses_clicked_vertex_when_back_corner_projects_same_pixel(self):
-        vertex_index = next(i+1 for i, v in enumerate(piece.Shape.Vertexes) if tuple(v.Point) == (0., 0., 0.))
-        view.pick = {'Document': self.doc.Name, 'Object': piece.Name, 'Component': 'Vertex' + str(vertex_index), 'x': 0., 'y': 0., 'z': 0.}
-        self.dialog.click((0, 0))
-        self.assertEqual(tuple(self.dialog.source), (0., 0., 0.))
-    def test_target_rear_vertices_cannot_override_front_surface(self):
-        self.anchor(); target = self.target()
-        target.Placement = App.Placement(App.Vector(50, 0, 10), App.Rotation(App.Vector(1, 0, 0), 180))
-        self.doc.recompute(); self.pick_target(target)
-        self.dialog.move((50, 0))
-        self.assertEqual(self.dialog.destination.z, 10.)
-    def test_hover_snap_click_commits_exact_target_and_refreshes_moved_target(self):
-        self.anchor(); target = self.target()
-        self.pick_target(target)
-        self.dialog.move((50, 0))
-        self.assertAlmostEqual(self.dialog.destination.x, 50)
-        self.assertIn('vertex', self.dialog.message.text())
-        self.assertEqual(piece.Placement.Base.x, 0)
-        target.Placement.Base = App.Vector(75, 0, 0); self.doc.recompute()
-        self.dialog.click((75, 0))
-        self.assertAlmostEqual(piece.Placement.Base.x, 75)
+    def test_inferred_end_connection_refreshes_target_and_commits_once(self):
+        target = self.target(); self.pick_target(target)
+        self.dialog.move((148, 105))
+        self.assertIsNotNone(self.dialog.connection)
+        self.assertAlmostEqual(self.dialog.destination.x - self.dialog.source.x, 40)
+        self.assertEqual(self.dialog.lines.numVertices.getNum(), 3)
+        self.assertIn(target.Label, self.dialog.message.text())
+        self.assertEqual(tuple(piece.Placement.Base), (0., 0., 0.))
+        target.Placement.Base.x = 75; self.doc.recompute()
+        self.dialog.click((173, 105))
+        self.assertAlmostEqual(piece.Placement.Base.x, 65)
+        self.assertTrue(self.dialog.closed)
+        self.doc.undo(); self.assertLess(piece.Placement.Base.Length, 1e-7)
+    def test_toggle_off_releases_current_snap_and_moving_away_stays_free(self):
+        target = self.target(); self.pick_target(target)
+        self.dialog.move((148, 105))
+        self.assertAlmostEqual(self.dialog.destination.x, 45)
+        self.dialog.snap_button.setChecked(False)
+        self.assertIsNone(self.dialog.connection)
+        self.assertEqual(self.dialog.lines.numVertices.getNum(), 2)
+        self.assertAlmostEqual(self.dialog.destination.x, 48)
+        self.dialog.snap_button.setChecked(True)
+        self.assertAlmostEqual(self.dialog.destination.x, 45)
+        self.dialog.move((10, 150))
+        self.assertIsNone(self.dialog.connection)
+    def test_connection_is_retained_just_outside_pixel_capture_then_releases(self):
+        self.dialog.close(); piece.Length = 100; self.doc.recompute()
+        self.dialog = module.MagneticMoveDialog(piece)
+        target = self.target(base=App.Vector(200, 0, 0)); target.Length = 100; self.doc.recompute()
+        self.pick_target(target); self.dialog.set_axis('X')
+        self.dialog.move((253, 105))
+        self.assertAlmostEqual(self.dialog.destination.x - self.dialog.source.x, 100)
+        self.dialog.move((269, 105))
+        self.assertIsNotNone(self.dialog.connection)
+        self.assertAlmostEqual(self.dialog.destination.x - self.dialog.source.x, 100)
+        self.dialog.move((275, 105)); self.assertIsNone(self.dialog.connection)
+    def test_occluded_target_and_far_depth_are_not_connections(self):
+        target = self.target(); blocker = self.target('Blocker', App.Vector(50, 0, 300))
+        self.pick_target(blocker)
+        self.dialog.move((148, 105))
+        self.assertIsNone(self.dialog.connection)
+        self.assertAlmostEqual(self.dialog.destination.x, 48)
+        self.assertLessEqual(self.dialog.capture_distance((148, 105)), 50)
+    def test_duplicate_label_does_not_make_occluded_joint_visible(self):
+        target = self.target(); blocker = self.target('Blocker', App.Vector(50, 0, 300))
+        blocker.Label = target.Label
+        self.pick_target(blocker); self.dialog.move((148, 105))
+        self.assertIsNone(self.dialog.connection)
+    def test_nested_object_occluding_target_cannot_be_treated_as_empty_pixel(self):
+        self.target(); blocker = self.target('Blocker', App.Vector(50, 0, 300))
+        container = self.doc.addObject('App::Part', 'Container'); container.addObject(blocker)
+        self.pick_target(blocker); self.dialog.move((148, 105))
+        self.assertIsNone(self.dialog.connection)
+    def test_coin_first_motion_and_click_use_event_position_without_pickup(self):
+        event = coin.SoLocation2Event(); event.setPosition(coin.SbVec2s(125, 110))
+        callback = types.SimpleNamespace(getEvent=lambda: event, setHandled=lambda: None)
+        self.dialog.handle_event(callback)
+        self.assertAlmostEqual(self.dialog.destination.x, 25)
+        event = coin.SoMouseButtonEvent(); event.setPosition(coin.SbVec2s(125, 110))
+        event.setButton(coin.SoMouseButtonEvent.BUTTON1); event.setState(coin.SoButtonEvent.DOWN)
+        self.dialog.handle_event(callback)
+        self.assertAlmostEqual(piece.Placement.Base.x, 20)
         self.assertTrue(self.dialog.closed)
     def test_hidden_source_and_nested_objects_are_excluded(self):
-        self.anchor(); visible = self.target(); hidden = self.target('Hidden', App.Vector(80, 0, 0))
+        visible = self.target(); hidden = self.target('Hidden', App.Vector(80, 0, 0))
         view.visibility[hidden.Name] = False
         container = self.doc.addObject('App::Part', 'Container')
         nested = self.target('Nested', App.Vector(100, 0, 0)); container.addObject(nested)
-        labels = [c[2] for c in self.dialog.targets()]
+        labels = [c[0] for c in self.dialog.targets()]
         self.assertTrue(labels); self.assertTrue(all(c.startswith(visible.Label) for c in labels))
         view.visibility[visible.Name] = False
         self.assertEqual(self.dialog.targets(), [])
-    def test_planar_face_uses_surface_pick_not_centre(self):
-        self.anchor(); target = self.target(); target.Length = 100; target.Width = 100; self.doc.recompute()
-        face_name = next('Face' + str(i+1) for i, f in enumerate(target.Shape.Faces) if abs(f.CenterOfMass.z) < 1e-7)
-        view.pick = {'Document': self.doc.Name, 'Object': target.Name, 'Component': face_name, 'x': 82., 'y': 37., 'z': 0.}
-        self.dialog.move((82, 37))
-        self.assertEqual(tuple(self.dialog.destination), (82., 37., 0.))
-        self.assertIn('face', self.dialog.message.text())
     def test_source_geometry_change_cancels_stale_anchor(self):
-        self.anchor(); piece.Length = 30; self.doc.recompute(); self.dialog.check_context()
+        piece.Length = 30; self.doc.recompute(); self.dialog.check_context()
         self.assertTrue(self.dialog.closed); self.assertEqual(view.scene.getNumChildren(), 0)
     def test_escape_coin_event_cancels(self):
-        self.anchor(); event = coin.SoKeyboardEvent(); event.setKey(coin.SoKeyboardEvent.ESCAPE)
+        event = coin.SoKeyboardEvent(); event.setKey(coin.SoKeyboardEvent.ESCAPE)
         event.setState(coin.SoButtonEvent.DOWN)
         callback = types.SimpleNamespace(getEvent=lambda: event, setHandled=lambda: None)
         self.dialog.handle_event(callback)
@@ -163,22 +265,11 @@ class MagneticTests(unittest.TestCase):
         finally:
             gui.activeWorkbench = prior
     def test_closed_document_cancels_without_leaking_nodes(self):
-        self.anchor(); name = self.doc.Name
+        name = self.doc.Name
         App.closeDocument(name); self.dialog.check_context()
         self.assertTrue(self.dialog.closed); self.assertEqual(view.callbacks, [])
         self.assertEqual(view.scene.getNumChildren(), 0)
-    def test_coin_motion_and_left_click_use_actual_event_pixel_position(self):
-        self.anchor(); target = self.target(); self.pick_target(target)
-        event = coin.SoLocation2Event(); event.setPosition(coin.SbVec2s(50, 0))
-        callback = types.SimpleNamespace(getEvent=lambda: event, setHandled=lambda: None)
-        self.dialog.handle_event(callback)
-        self.assertEqual(tuple(self.dialog.destination), (50., 0., 10.))
-        event = coin.SoMouseButtonEvent(); event.setPosition(coin.SbVec2s(50, 0))
-        event.setButton(coin.SoMouseButtonEvent.BUTTON1); event.setState(coin.SoButtonEvent.DOWN)
-        self.dialog.handle_event(callback)
-        self.assertEqual(tuple(piece.Placement.Base), (50., 0., 0.)); self.assertTrue(self.dialog.closed)
     def test_modified_left_mouse_navigation_preserves_placement(self):
-        self.anchor()
         event = coin.SoMouseButtonEvent(); event.setButton(coin.SoMouseButtonEvent.BUTTON1)
         event.setState(coin.SoButtonEvent.DOWN); event.setCtrlDown(True)
         callback = types.SimpleNamespace(getEvent=lambda: event, handled=False)
@@ -187,7 +278,7 @@ class MagneticTests(unittest.TestCase):
         self.assertFalse(callback.handled); self.assertFalse(self.dialog.closed)
         self.assertEqual(tuple(piece.Placement.Base), (0., 0., 0.))
     def test_coin_axis_keyboard_and_typed_distance_survive_hover(self):
-        self.anchor(); event = coin.SoKeyboardEvent(); event.setKey(coin.SoKeyboardEvent.X)
+        event = coin.SoKeyboardEvent(); event.setKey(coin.SoKeyboardEvent.X)
         event.setState(coin.SoButtonEvent.DOWN)
         callback = types.SimpleNamespace(getEvent=lambda: event, setHandled=lambda: None)
         self.dialog.handle_event(callback); self.assertEqual(self.dialog.axis, 'X')
@@ -195,10 +286,9 @@ class MagneticTests(unittest.TestCase):
         self.assertEqual(self.dialog.distance.value(), -37.25)
         self.assertFalse(self.dialog.closed)
     def test_error_during_hover_removes_preview_without_model_change(self):
-        self.anchor()
-        def broken_pick(position):
+        def broken_camera_size():
             raise RuntimeError('Expected view failure fixture')
-        view.pick = broken_pick
+        view.getSize = broken_camera_size
         event = coin.SoLocation2Event(); event.setPosition(coin.SbVec2s(50, 0))
         callback = types.SimpleNamespace(getEvent=lambda: event, setHandled=lambda: None)
         self.dialog.handle_event(callback)
@@ -209,47 +299,6 @@ class MagneticTests(unittest.TestCase):
         other = App.newDocument('OtherMagneticCheck')
         self.dialog.check_context(); self.assertTrue(self.dialog.closed)
         App.closeDocument(other.Name)
-    def test_reentry_with_empty_selection_reuses_valid_source_and_cleans_old_session(self):
-        self.assertEqual(selection, [])
-        gui._workbench_magnetic_move_dialog = self.dialog
-        notices = []
-        original_notice = QtWidgets.QMessageBox.information
-        try:
-            QtWidgets.QMessageBox.information = lambda *args: notices.append(str(args[-1]))
-            module.MagneticMove().Activated()
-            self.assertTrue(self.dialog.closed)
-            replacement = gui._workbench_magnetic_move_dialog
-            self.assertIsNotNone(replacement); self.assertIs(replacement.part, piece)
-            self.assertEqual(len(view.callbacks), 1); self.assertEqual(view.scene.getNumChildren(), 1)
-            self.assertEqual(notices, [])
-            self.assertEqual(tuple(piece.Placement.Base), (0., 0., 0.))
-            replacement.close()
-            self.assertEqual(view.callbacks, []); self.assertEqual(view.scene.getNumChildren(), 0)
-        finally:
-            QtWidgets.QMessageBox.information = original_notice
-    def test_reentry_with_invalid_source_closes_old_session_before_notice(self):
-        gui._workbench_magnetic_move_dialog = self.dialog
-        self.doc.removeObject(piece.Name)
-        notices = []
-        original_notice = QtWidgets.QMessageBox.information
-        try:
-            def notice(*args):
-                self.assertTrue(self.dialog.closed)
-                self.assertEqual(view.callbacks, []); self.assertEqual(view.scene.getNumChildren(), 0)
-                notices.append(str(args[-1]))
-            QtWidgets.QMessageBox.information = notice
-            module.MagneticMove().Activated()
-            self.assertEqual(len(notices), 1)
-            self.assertIsNone(gui._workbench_magnetic_move_dialog)
-        finally:
-            QtWidgets.QMessageBox.information = original_notice
-    def test_reentry_closes_previous_session(self):
-        selection[:] = [piece]
-        gui._workbench_magnetic_move_dialog = self.dialog
-        module.MagneticMove().Activated()
-        replacement = gui._workbench_magnetic_move_dialog
-        self.assertTrue(self.dialog.closed); self.assertEqual(len(view.callbacks), 1)
-        replacement.close(); self.assertEqual(view.callbacks, [])
 if __name__ == '__main__':
     path = Path(__file__).resolve().parents[1] / 'DIYWorkbenchTools' / 'WorkbenchMagneticMove.py'
     assert path.exists(), 'Magnetic Move session is not implemented'

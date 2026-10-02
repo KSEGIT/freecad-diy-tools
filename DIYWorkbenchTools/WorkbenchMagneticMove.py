@@ -6,7 +6,6 @@ installed 1.1.3 commit 145529fe741292ff0b3977a01195bf0247425794.
 from pathlib import Path
 import FreeCAD as App
 import FreeCADGui as Gui
-import Part
 from pivy import coin
 from PySide import QtCore, QtGui
 try:
@@ -15,8 +14,39 @@ except ImportError:
     QtWidgets = QtGui
 from WorkbenchPlacement import selected_piece
 from WorkbenchMagneticGeometry import (
-    shape_candidates, choose_snap, constrained_point, translated_placement,
+    constrained_point, translated_placement,
 )
+
+from WorkbenchConnectionSnap import connection_snap
+
+
+def snap_enabled():
+    return App.ParamGet("User parameter:BaseApp/Preferences/DIYWorkbenchTools").GetBool("SnapEnabled", True)
+
+
+def set_snap_enabled(enabled):
+    App.ParamGet("User parameter:BaseApp/Preferences/DIYWorkbenchTools").SetBool("SnapEnabled", bool(enabled))
+    # Installed Draft uses Command.get(...).getAction() for shared Qt actions.
+    if hasattr(Gui, 'Command'):
+        command = Gui.Command.get('DIY_MagneticMove')
+        if command is not None:
+            actions = command.getAction()
+            Gui._workbench_snap_actions = actions
+            for action in actions:
+                action.setCheckable(True)
+                action.setChecked(bool(enabled))
+    dialog = getattr(Gui, "_workbench_magnetic_move_dialog", None)
+    if dialog is not None and not dialog.closed:
+        blocked = dialog.snap_button.blockSignals(True)
+        dialog.snap_button.setChecked(bool(enabled))
+        dialog.snap_button.blockSignals(blocked)
+        dialog.connection = None
+        if dialog.last_position is not None:
+            dialog.move(dialog.last_position)
+
+
+def toggle_snap():
+    set_snap_enabled(not snap_enabled())
 
 
 def _independent(obj):
@@ -43,18 +73,23 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         self.source_shape_hash = part.Shape.hashCode()
         self.view = Gui.activeDocument().activeView()
         self.workbench = _workbench()
-        self.source = self.destination = None
+        self.source_shape = part.Shape.copy()
+        self.source = App.Vector(self.source_shape.CenterOfMass)
+        self.destination = App.Vector(self.source)
+        self.connection = None
+        self.last_position = None
         self.axis = None
         self.closed = False
         self.callback = None
         self.preview_root = None
         self.cache = {}
         self.left_down = False
-        self.setWindowTitle('Magnetic Move — ' + part.Label)
+        self.setWindowTitle('Move — ' + part.Label[:32])
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
-        self.setMinimumWidth(330)
+        self.setMinimumWidth(300)
+        self.setMaximumWidth(380)
         layout = QtWidgets.QVBoxLayout(self)
-        self.message = QtWidgets.QLabel('Click a corner on ' + part.Label)
+        self.message = QtWidgets.QLabel()
         self.message.setWordWrap(True)
         layout.addWidget(self.message)
         row = QtWidgets.QHBoxLayout(); layout.addLayout(row)
@@ -72,17 +107,30 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         self.apply_button = QtWidgets.QPushButton('Apply distance')
         self.apply_button.setEnabled(False); self.apply_button.clicked.connect(self.apply_distance)
         row.addWidget(self.apply_button)
+        self.snap_button = QtWidgets.QCheckBox('Auto snap (S)')
+        self.snap_button.setChecked(snap_enabled())
+        self.snap_button.toggled.connect(set_snap_enabled)
+        layout.addWidget(self.snap_button)
         cancel = QtWidgets.QPushButton('Cancel'); cancel.clicked.connect(self.close); layout.addWidget(cancel)
         self.timer = QtCore.QTimer(self); self.timer.setInterval(100)
         self.timer.timeout.connect(self.check_context)
         try:
             self.make_preview()
+            self.preview(self.source, "Free move")
             self.callback = self.view.addEventCallbackPivy(coin.SoEvent.getClassTypeId(), self.handle_event)
             Gui.Selection.clearSelection()
+            Gui._workbench_magnetic_move_dialog = self
             self.timer.start()
+            parent = Gui.getMainWindow()
+            if parent is not None:
+                edge = parent.mapToGlobal(parent.rect().topRight())
+                self.move_window(edge.x() - 390, edge.y() + 70)
         except Exception:
             self.cleanup()
             raise
+
+    def move_window(self, x, y):
+        QtWidgets.QDialog.move(self, x, y)
 
     def make_preview(self):
         self.scene = self.view.getSceneGraph()
@@ -124,8 +172,8 @@ class MagneticMoveDialog(QtWidgets.QDialog):
             self.close()
 
     def targets(self):
-        """Cache geometry by shape identity while rechecking visibility each move."""
-        candidates = []; present = set(); self.candidate_objects = {}
+        """Snapshot independent visible solids; refresh when shape or placement changes."""
+        result = []; present = set(); self.target_objects = {}
         for obj in self.doc.Objects:
             if obj is self.part or not _independent(obj) or not _visible(obj):
                 continue
@@ -133,42 +181,42 @@ class MagneticMoveDialog(QtWidgets.QDialog):
             key = (obj.Shape.hashCode(), str(obj.Placement), obj.Label)
             cached = self.cache.get(obj.Name)
             if cached is None or cached[0] != key:
-                cached = (key, shape_candidates(obj.Shape, obj.Label)); self.cache[obj.Name] = cached
-            candidates.extend(cached[1])
-            self.candidate_objects.update((id(candidate), obj) for candidate in cached[1])
+                cached = (key, obj.Shape.copy()); self.cache[obj.Name] = cached
+            result.append((obj.Label, cached[1])); self.target_objects[id(cached[1])] = obj
         for name in list(self.cache):
             if name not in present:
                 del self.cache[name]
-        return candidates
-
-    def visible_candidates(self, position):
-        """Reject obscured points using the feature picked at each nearby pixel."""
-        result = []
-        for candidate in self.targets():
-            pixel = self.view.getPointOnScreen(candidate[1])
-            if (pixel[0] - position[0]) ** 2 + (pixel[1] - position[1]) ** 2 > 14 ** 2:
-                continue
-            obj, info = self.picked(pixel)
-            if obj is not self.candidate_objects[id(candidate)]:
-                continue
-            component = info.get('Component', '')
-            if not component.startswith(('Vertex', 'Edge', 'Face')):
-                continue
-            feature = obj.Shape.getElement(component)
-            # Test membership in the visible picked feature, avoiding the depth
-            # ambiguity of front and rear corners at the same screen pixel.
-            if feature.distToShape(Part.Vertex(candidate[1]))[0] < 1e-6:
-                result.append(candidate)
         return result
 
-    def picked(self, position):
-        info = self.view.getObjectInfo(tuple(int(v) for v in position))
-        if not info or info.get('Document') != self.docname or 'ParentObject' in info:
-            return None, None
-        obj = self.doc.getObject(info.get('Object', ''))
-        if obj is None or not _independent(obj):
-            return None, None
-        return obj, info
+    def capture_distance(self, position):
+        """Include the two-pixel retention margin without allowing distant depth jumps."""
+        a = self.point_on_plane(position)
+        b = self.point_on_plane((position[0] + 20, position[1]))
+        c = self.point_on_plane((position[0], position[1] + 20))
+        return max(0.001, min(50., max((a-b).Length, (a-c).Length)))
+
+    def find_connection(self, raw_delta, position):
+        targets = self.targets()
+        previous = self.connection
+        while targets:
+            snap = connection_snap(self.source_shape, targets, raw_delta,
+                                   self.view.getPointOnScreen, world_tolerance=self.capture_distance(position),
+                                   axis=self.axis, previous=previous)
+            if snap is None:
+                return None
+            # Face centres can project onto another face of the same solid.
+            # Reject occlusion by a different solid; silhouette rounding may miss.
+            pixel = self.view.getPointOnScreen(snap['target'])
+            info = self.view.getObjectInfo(tuple(int(v) for v in pixel))
+            index = snap['key'][0]
+            target_obj = self.target_objects[id(targets[index][1])]
+            if (not info or (info.get('Document') == self.docname
+                             and info.get('Object') == target_obj.Name
+                             and 'ParentObject' not in info)):
+                return snap
+            targets.pop(index)
+            previous = None
+        return None
 
     def point_on_plane(self, position):
         """Intersect the camera ray with a plane through the chosen source."""
@@ -209,25 +257,19 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         return self.source + axis * distance
 
     def move(self, position):
-        if self.closed or self.source is None:
+        if not self.closed and not self.valid_context():
+            self.close()
+        if self.closed:
             return
-        snap = choose_snap(self.visible_candidates(position), position, self.view.getPointOnScreen,
-                           anchor=self.source, axis=self.axis)
-        if snap is None:
-            obj, info = self.picked(position)
-            if obj is not None and obj is not self.part and _visible(obj):
-                component = info.get('Component', '')
-                if component.startswith('Face'):
-                    face = obj.Shape.getElement(component)
-                    if isinstance(face.Surface, Part.Plane):
-                        point = App.Vector(info['x'], info['y'], info['z'])
-                        snap = choose_snap([('face', point, obj.Label + ' ' + component)], position,
-                                           self.view.getPointOnScreen, anchor=self.source, axis=self.axis)
+        self.last_position = position
+        point = self.axis_point(position, self.point_on_plane(position))
+        # Preserve native navigation: modifiers are handled before reaching here.
+        snap = self.find_connection(point - self.source, position) if snap_enabled() else None
+        self.connection = snap
         if snap is not None:
-            self.preview(snap[1], snap[2] + ' — ' + snap[0])
+            self.preview(self.source + snap['delta'], snap['label'][:32] + ' — ' + snap['kind'])
         else:
-            point = self.axis_point(position, self.point_on_plane(position))
-            self.preview(point, 'Cursor' if self.axis is None else self.axis + ' axis')
+            self.preview(point, 'Free move' if self.axis is None else self.axis + ' axis')
 
     def preview(self, destination, label):
         self.destination = App.Vector(destination)
@@ -238,36 +280,29 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         # Three world-axis steps show the delta as well as the direct travel line.
         a = self.source; b = a + App.Vector(delta.x, 0, 0); c = b + App.Vector(0, delta.y, 0)
         points = [tuple(a), tuple(b), tuple(c), tuple(self.destination), tuple(a), tuple(self.destination)]
-        self.guide_coords.point.setValues(0, len(points), points); self.lines.numVertices.setValues(0, 2, [4, 2])
-        self.message.setText('{}\nΔ X {:.2f}  Y {:.2f}  Z {:.2f} mm\nDistance {:.2f} mm\nClick to place. X / Y / Z lock; Esc cancels.'.format(
+        self.guide_coords.point.setNum(len(points))
+        self.guide_coords.point.setValues(0, len(points), points)
+        self.lines.numVertices.setNum(2)
+        self.lines.numVertices.setValues(0, 2, [4, 2])
+        if self.connection is not None:
+            contact = self.connection['source']; target = self.connection['target']
+            points.extend([tuple(contact), tuple(target)])
+            self.guide_coords.point.setValues(0, len(points), points)
+            self.lines.numVertices.setValues(0, 3, [4, 2, 2])
+            self.marker_coords.point.setValue(tuple(target))
+        self.message.setText('{}\nΔ X {:.2f}  Y {:.2f}  Z {:.2f} mm\nDistance {:.2f} mm\nClick to place. X / Y / Z lock; S snap; Esc cancels.'.format(
             label, delta.x, delta.y, delta.z, delta.Length))
 
     def click(self, position):
-        if self.closed:
-            return
-        if self.source is None:
-            obj, info = self.picked(position)
-            if obj is not self.part:
-                self.message.setText('Click a corner on ' + self.part.Label)
-                return
-            component = info.get('Component', '')
-            if not component.startswith(('Vertex', 'Edge', 'Face')):
-                return
-            feature = self.part.Shape.getElement(component)
-            candidates = [c for c in shape_candidates(feature, self.part.Label) if c[0] == 'vertex']
-            snap = choose_snap(candidates, position, self.view.getPointOnScreen)
-            if snap is None:
-                self.message.setText('Click closer to a visible corner on ' + self.part.Label)
-                return
-            self.source = App.Vector(snap[1]); self.preview(self.source, 'Source corner chosen')
-            self.set_axis(self.axis, toggle=False)
-        else:
-            self.move(position); self.commit()
+        if not self.closed:
+            self.move(position)
+            self.commit()
 
     def set_axis(self, axis, toggle=True):
         if toggle and axis == self.axis:
             axis = None
         self.axis = axis
+        self.connection = None
         for name, button in self.axis_buttons.items():
             button.setChecked(name == axis)
         enabled = axis is not None and self.source is not None
@@ -282,6 +317,7 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         if self.axis is None or self.source is None or self.closed:
             return
         axis = App.Vector(*(1 if a == self.axis else 0 for a in 'XYZ'))
+        self.connection = None
         self.preview(self.source + axis * self.distance.value(), self.axis + ' exact distance')
         self.commit()
 
@@ -290,7 +326,7 @@ class MagneticMoveDialog(QtWidgets.QDialog):
             self.close(); return
         if self.source is None or self.destination is None:
             return
-        self.doc.openTransaction('Magnetic Move')
+        self.doc.openTransaction('Move DIY part')
         try:
             self.part.Placement = translated_placement(self.original, self.source, self.destination)
             self.doc.recompute(); self.doc.commitTransaction()
@@ -310,6 +346,8 @@ class MagneticMoveDialog(QtWidgets.QDialog):
                     key = event.getKey()
                     if key == coin.SoKeyboardEvent.ESCAPE:
                         callback.setHandled(); self.close()
+                    elif key == coin.SoKeyboardEvent.S:
+                        callback.setHandled(); toggle_snap()
                     else:
                         for axis in 'XYZ':
                             if key == getattr(coin.SoKeyboardEvent, axis):
@@ -335,6 +373,8 @@ class MagneticMoveDialog(QtWidgets.QDialog):
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_Escape:
             self.close(); event.accept()
+        elif event.key() == QtCore.Qt.Key_S:
+            toggle_snap(); event.accept()
         elif event.key() in (QtCore.Qt.Key_X, QtCore.Qt.Key_Y, QtCore.Qt.Key_Z):
             self.set_axis(chr(event.key())); event.accept()
         else:
@@ -366,36 +406,40 @@ class MagneticMoveDialog(QtWidgets.QDialog):
 class MagneticMove:
     def GetResources(self):
         return {'Pixmap': str(Path(__file__).with_name('WorkbenchMagneticMove.svg')),
-                'MenuText': 'Magnetic Move', 'ToolTip': 'Select one solid, choose its corner and move with exact snaps'}
+                'MenuText': 'Auto snap', 'ToolTip': 'Toggle automatic face, end and corner connections (S)',
+                'Checkable': snap_enabled(), 'CmdType': 'NoTransaction'}
     def IsActive(self):
-        return App.ActiveDocument is not None
-    def Activated(self):
-        try:
-            previous = getattr(Gui, '_workbench_magnetic_move_dialog', None)
-            prior_part = None
-            if previous is not None:
-                # Starting a session clears selection. Reentry can reuse its
-                # source only while the previous context is still valid.
-                if not previous.closed and previous.valid_context():
-                    prior_part = previous.part
-                previous.close()
-            part = (prior_part if not Gui.Selection.getSelection() and prior_part is not None
-                    else selected_piece())
-            if not _independent(part):
-                raise ValueError('Choose an independent solid outside a Part or Body container.')
-            for name in ('_workbench_place_edit_dialog',
-                         '_workbench_corner_dialog', '_workbench_rotate_dialog'):
-                previous = getattr(Gui, name, None)
-                if previous is not None:
-                    previous.close()
-            gui_doc = Gui.activeDocument()
-            if gui_doc.getInEdit() is not None:
-                gui_doc.resetEdit()
-            dialog = MagneticMoveDialog(part)
-            Gui._workbench_magnetic_move_dialog = dialog
-            dialog.show()
-        except Exception as error:
-            QtWidgets.QMessageBox.information(Gui.getMainWindow(), 'Magnetic Move', str(error))
+        return True
+    def Activated(self, status=0):
+        toggle_snap()
 
+
+def start_move():
+    try:
+        previous = getattr(Gui, '_workbench_magnetic_move_dialog', None)
+        prior_part = None
+        if previous is not None:
+            # Starting a session clears selection. Reentry can reuse its
+            # source only while the previous context is still valid.
+            if not previous.closed and previous.valid_context():
+                prior_part = previous.part
+            previous.close()
+        part = (prior_part if not Gui.Selection.getSelection() and prior_part is not None
+                else selected_piece())
+        if not _independent(part):
+            raise ValueError('Choose an independent solid outside a Part or Body container.')
+        for name in ('_workbench_place_edit_dialog',
+                     '_workbench_corner_dialog', '_workbench_rotate_dialog'):
+            previous = getattr(Gui, name, None)
+            if previous is not None:
+                previous.close()
+        gui_doc = Gui.activeDocument()
+        if gui_doc.getInEdit() is not None:
+            gui_doc.resetEdit()
+        dialog = MagneticMoveDialog(part)
+        Gui._workbench_magnetic_move_dialog = dialog
+        dialog.show()
+    except Exception as error:
+        QtWidgets.QMessageBox.information(Gui.getMainWindow(), 'Move part', str(error))
 
 Gui.addCommand('DIY_MagneticMove', MagneticMove())
