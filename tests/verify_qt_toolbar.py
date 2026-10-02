@@ -114,6 +114,17 @@ class ToolbarTests(unittest.TestCase):
         self.controller.relocate()
         for command in ('DIY_MovePart','DIY_RotatePart','DIY_MagneticMove'):
             self.assertEqual(self.edit.actions().count(self.command_actions[command][0]),1)
+    def test_auto_snap_button_is_checkable_and_restores_saved_state(self):
+        self.ready()
+        action=self.command_actions['DIY_MagneticMove'][0]
+        self.assertTrue(action.isCheckable())
+        self.assertTrue(action.isChecked())
+        self.param(self.module.PREFS).SetBool('SnapEnabled',False)
+        self.controller.relocate()
+        self.assertFalse(action.isChecked())
+        self.assertIn(action,self.edit.actions())
+        self.main.workbenchActivated.emit('DraftWorkbench'); application.processEvents()
+        self.assertFalse(action.isChecked())
     def test_edit_menu_recreation_preserves_move_rotate(self):
         self.ready()
         self.main.menuBar().removeAction(self.edit.menuAction()); self.edit.deleteLater()

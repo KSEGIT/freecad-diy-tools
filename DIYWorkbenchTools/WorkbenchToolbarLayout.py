@@ -103,6 +103,9 @@ class ToolbarController:
                     if command is None:
                         continue
                     for command_action in command.getAction():
+                        if command_name == 'DIY_MagneticMove':
+                            command_action.setCheckable(True)
+                            command_action.setChecked(self.prefs.GetBool('SnapEnabled', True))
                         self.edit_actions.append(command_action)
                         if command_action not in tools.actions():
                             tools.addAction(command_action)
