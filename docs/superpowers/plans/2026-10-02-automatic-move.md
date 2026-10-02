@@ -17,8 +17,10 @@
 ## Task 3 — toolbar and finish
 - [x] Move starts automatic movement; separate checkable magnet button toggles the shared saved SnapEnabled state. Edit menu shares both actions; preserve their existing command IDs. Update real Qt migration tests, docs and package0.5.0.
 - [x] Fresh review inference and full interaction. Run standard8, native geometry, Qt interaction/toolbar/MoveRotate/editor, compile and diff checks. Fix blockers.
-- [ ] Install verified add-on without changing Woodworking, push feature/update existing PR, preserve local source and remove worktree. Live native rendering is unverified if computer use remains unavailable; state this explicitly.
+- [x] Install verified add-on without changing Woodworking, push feature/update existing PR, preserve local source and remove worktree. Live native rendering is unverified if computer use remains unavailable; state this explicitly.
 
 ## Verification record
 
 Fresh geometry and whole-feature reviewers found no blocking issues. Final checks on 2026-10-02: standard unittest discovery 8 passed; verify_connection_snap.py 12 passed; verify_qt_magnetic.py 29 passed; verify_magnetic_geometry.py 7 passed; verify_qt_toolbar.py 9 passed. verify_qt_move_rotate.py, verify_geometry.py and verify_qt_editor.py passed. Bundled FreeCAD Python compileall and git diff --check passed. Native geometry, Qt and Coin were tested with simulated view boundaries. Live OpenGL rendering and native mouse dispatch remain unverified because computer control timed out.
+
+Installation: 20 installed source files match byte-for-byte; 159 original Woodworking file signatures unchanged. Feature is published through the existing pull request; local source is retained before worktree cleanup.
