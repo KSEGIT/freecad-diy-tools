@@ -18,7 +18,7 @@ GROUP = 'Custom_DIYWorkbenchTools'
 PREFS = 'User parameter:BaseApp/Preferences/DIYWorkbenchTools'
 GLOBAL_PREFS = 'User parameter:BaseApp/Workbench/Global/Toolbar'
 VISIBILITY_PREFS = 'User parameter:BaseApp/MainWindow/Toolbars'
-COMMANDS = ('DIY_AddWorkbenchParts', 'DIY_MovePart', 'DIY_RotatePart', 'DIY_MagneticMove',
+COMMANDS = ('DIY_AddWorkbenchParts', 'DIY_MovePart', 'DIY_AutoMove', 'DIY_RotatePart', 'DIY_MagneticMove',
             'DIY_PlaceEdit', 'DIY_JoinCorners',
             'DIY_StandUpright', 'DIY_RotateX', 'DIY_RotateY', 'DIY_RotateZ')
 _controller = None
@@ -98,7 +98,7 @@ class ToolbarController:
                 # Reuse the native command actions so availability, tooltips,
                 # icons and shortcuts match the toolbar in every workbench.
                 self.edit_actions = []
-                for command_name in ('DIY_MovePart', 'DIY_RotatePart', 'DIY_MagneticMove'):
+                for command_name in ('DIY_MovePart', 'DIY_AutoMove', 'DIY_RotatePart', 'DIY_MagneticMove'):
                     command = Gui.Command.get(command_name)
                     if command is None:
                         continue

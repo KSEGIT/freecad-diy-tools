@@ -104,15 +104,15 @@ class ToolbarTests(unittest.TestCase):
         self.assertTrue(self.toolbar.isVisible())
     def test_move_rotate_share_toolbar_actions_with_edit_menu(self):
         self.ready()
-        for command in ('DIY_MovePart','DIY_RotatePart','DIY_MagneticMove'):
+        for command in ('DIY_MovePart','DIY_AutoMove','DIY_RotatePart','DIY_MagneticMove'):
             self.assertIn(command,self.module.COMMANDS)
             action=self.command_actions[command][0]
             self.assertIn(action,self.toolbar.actions())
             self.assertIn(action,self.edit.actions())
             action.trigger()
-        self.assertEqual(self.invoked,['DIY_MovePart','DIY_RotatePart','DIY_MagneticMove'])
+        self.assertEqual(self.invoked,['DIY_MovePart','DIY_AutoMove','DIY_RotatePart','DIY_MagneticMove'])
         self.controller.relocate()
-        for command in ('DIY_MovePart','DIY_RotatePart','DIY_MagneticMove'):
+        for command in ('DIY_MovePart','DIY_AutoMove','DIY_RotatePart','DIY_MagneticMove'):
             self.assertEqual(self.edit.actions().count(self.command_actions[command][0]),1)
     def test_auto_snap_button_is_checkable_and_restores_saved_state(self):
         self.ready()
@@ -131,7 +131,7 @@ class ToolbarTests(unittest.TestCase):
         application.processEvents()
         menu=self.main.menuBar().addMenu('Edit'); menu.setObjectName('Std_EditMenu')
         self.main.workbenchActivated.emit('DraftWorkbench'); application.processEvents()
-        for command in ('DIY_MovePart','DIY_RotatePart','DIY_MagneticMove'):
+        for command in ('DIY_MovePart','DIY_AutoMove','DIY_RotatePart','DIY_MagneticMove'):
             self.assertIn(command,self.command_actions)
             self.assertIn(self.command_actions[command][0],menu.actions())
 if __name__=='__main__': unittest.main()
