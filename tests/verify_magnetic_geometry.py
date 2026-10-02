@@ -7,8 +7,12 @@ sys.path.insert(0, '/Applications/FreeCAD.app/Contents/Resources/lib')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'DIYWorkbenchTools'))
 import FreeCAD as App
 import Part
+# FreeCAD prepends installed Mod paths during import. Verify this checkout.
+source = Path(__file__).resolve().parents[1] / 'DIYWorkbenchTools'
+sys.path.insert(0, str(source))
 try:
     import WorkbenchMagneticGeometry as geometry
+    assert Path(geometry.__file__).resolve().parent == source.resolve()
 except ModuleNotFoundError:
     geometry = None
 

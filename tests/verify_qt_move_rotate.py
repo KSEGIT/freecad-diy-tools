@@ -10,6 +10,7 @@ commands, calls, warnings = {}, [], []
 class Selection:
     selected = []
     def getSelection(self): return self.selected
+    def getSelectionEx(self): return []
     def clearSelection(self): self.selected = []
     def addSelection(self, part): self.selected.append(part)
 class View:
