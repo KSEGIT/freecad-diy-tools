@@ -67,6 +67,23 @@ class ConnectionTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.vector(result["delta"], (1700,0,0))
 
+    def test_near_other_joint_beats_farther_end_extension(self):
+        side = Part.makeBox(1700,94,44,App.Vector(1800,105,10))
+        result = connection_snap(self.source, [("NearSide",side),("EndBeam",self.target)],
+            App.Vector(1702,10,10),lambda p:(p.x,p.y))
+        self.assertIsNotNone(result)
+        self.vector(result["delta"], (1702,11,10))
+        self.assertEqual(result["label"], "NearSide")
+
+    def test_blocked_extension_releases_safe_partial_face_contact(self):
+        blocker = Part.makeBox(2,2,2,App.Vector(1750,0,0))
+        result = self.snap((1710,5,3), targets=[("Beam",self.target),("Blocker",blocker)])
+        self.assertIsNotNone(result)
+        self.vector(result["delta"], (1700,5,3))
+        moved = self.source.copy()
+        moved.translate(result["delta"])
+        self.assertLess(moved.common(blocker).Volume,1e-7)
+
     def test_axis_correction_obeys_each_lock(self):
         for axis, raw, expected in [('X',(1710,5,3),(1700,5,3)),
                                     ('Y',(200,100,4),(200,94,4)),

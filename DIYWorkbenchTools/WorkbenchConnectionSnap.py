@@ -54,7 +54,7 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
     source_min = min((f[1].Area for f in source_faces), default=0)
     candidates = {}
 
-    def propose(point, destination, kind, identity, label, faces=None, joint_distance=None):
+    def propose(point, destination, kind, identity, label, faces=None):
         correction = destination - point - raw
         distance = correction.Length
         if distance > world_tolerance + _EPS:
@@ -72,12 +72,10 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
         delta = destination - point
         delta_key = (tuple(round(getattr(delta, c), 6) for c in 'xyz'),
                      bool(faces is not None and faces[2]))
-        # End-profile alignment is one inferred joint: its in-plane drift
-        # must not make partial contact on that same end defeat a flush fit.
-        # The full correction still obeys both capture limits above.
+        # Across different joints, prefer smaller full world corrections.
+        # The bounded bonus favors a sensible nearby extension or flush fit.
         bonus = {'extension': 8, 'flush': 4, 'face': 0, 'corner': 0}[kind]
-        rank_distance = distance if joint_distance is None else joint_distance
-        score = (max(0, rank_distance-bonus), _PRIORITY[kind],
+        score = (max(0, distance-bonus), _PRIORITY[kind],
                  max(0, pixels-(2 if retained else 0)), distance)
         existing = candidates.get(delta_key)
         if existing is None or score < existing[0]:
@@ -105,7 +103,7 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
                     sf.Area <= source_min*(1+_EPS) and
                     tf.Area <= target_min*(1+_EPS)):
                     propose(sc, tc, 'extension', key+('extension',), label,
-                            (sf, tf, True), joint_distance=abs(separation))
+                            (sf, tf, True))
                 destination = sc + raw + sn*separation
                 propose(sc, destination, 'face', key+('face',), label, face_pair)
                 # Face corners align the rail end with an upright's boundary,
@@ -121,7 +119,22 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
 
     # Most cursor positions yield no proposals. Sort and deduplicate before any
     # boolean operations, then stop at the first valid connection.
-    for _score, result, faces in sorted(candidates.values(), key=lambda c:c[0]):
+    # Treat full profile and partial contact on the SAME face pair as one
+    # inferred joint. Try its extension first, but rank that joint against all
+    # OTHER joints using the full correction. If extension validation fails,
+    # the remaining contacts re-enter the global ranking without suppression.
+    groups = {}
+    for candidate in candidates.values():
+        _score, result, faces = candidate
+        group = result['key'][:4] if faces is not None else result['key']
+        groups.setdefault(group, []).append(candidate)
+    for group in groups.values():
+        group.sort(key=lambda c: (c[1]['kind'] != 'extension', c[0]))
+    while groups:
+        best_group = min(groups, key=lambda key: groups[key][0][0])
+        _score, result, faces = groups[best_group].pop(0)
+        if not groups[best_group]:
+            del groups[best_group]
         delta = result['delta']
         if faces is not None:
             source_face, target_face, equal_profile = faces
