@@ -84,7 +84,7 @@ class MagneticMoveDialog(QtWidgets.QDialog):
         self.preview_root = None
         self.cache = {}
         self.left_down = False
-        self.setWindowTitle('Move — ' + part.Label[:32])
+        self.setWindowTitle('Auto Move — ' + part.Label[:32])
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         self.setMinimumWidth(300)
         self.setMaximumWidth(380)

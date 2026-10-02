@@ -25,7 +25,39 @@ class MovePart:
     def GetResources(self):
         return {'Pixmap': str(Path(__file__).with_name('WorkbenchMove.svg')),
                 'MenuText': 'Move part',
-                'ToolTip': 'Select one solid part, move with the cursor and click to place'}
+                'ToolTip': 'Select one solid part, then move it with the 3D arrows'}
+
+    def IsActive(self):
+        return App.ActiveDocument is not None
+
+    def Activated(self):
+        try:
+            part = selected_piece()
+            if App.ActiveDocument is not part.Document:
+                raise ValueError('Activate the part document first.')
+            close_editor()
+            moving = getattr(Gui, '_workbench_magnetic_move_dialog', None)
+            if moving is not None:
+                moving.close()
+            previous = getattr(Gui, '_workbench_rotate_dialog', None)
+            if previous is not None:
+                previous.close()
+            Gui.Selection.clearSelection()
+            Gui.Selection.addSelection(part)
+            preferences = App.ParamGet('User parameter:BaseApp/History/Dragger')
+            # Defaults apply only when absent; preserve the user's chosen steps.
+            preferences.SetFloat('LastRotationIncrement', preferences.GetFloat('LastRotationIncrement', 90))
+            preferences.SetFloat('LastTranslationIncrement', preferences.GetFloat('LastTranslationIncrement', 1))
+            Gui.runCommand('Std_TransformManip', 0)
+        except Exception as error:
+            warning(error)
+
+
+class AutoMove:
+    def GetResources(self):
+        return {'Pixmap': str(Path(__file__).with_name('WorkbenchAutoMove.svg')),
+                'MenuText': 'Auto Move',
+                'ToolTip': 'Move a whole part with the cursor and automatic connections'}
 
     def IsActive(self):
         return App.ActiveDocument is not None
@@ -123,4 +155,5 @@ class RotatePart:
 
 
 Gui.addCommand('DIY_MovePart', MovePart())
+Gui.addCommand('DIY_AutoMove', AutoMove())
 Gui.addCommand('DIY_RotatePart', RotatePart())

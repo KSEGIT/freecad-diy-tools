@@ -36,7 +36,7 @@ QtWidgets.QMessageBox.warning = lambda *args: warnings.append(args[-1])
 QtWidgets.QMessageBox.information = lambda *args: warnings.append(args[-1])
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'DIYWorkbenchTools'))
 import WorkbenchMoveRotate as module
-assert {'DIY_MovePart', 'DIY_RotatePart'} <= commands.keys()
+assert {'DIY_MovePart', 'DIY_AutoMove', 'DIY_RotatePart'} <= commands.keys()
 doc = App.newDocument('MoveRotateCheck')
 doc.UndoMode = 1
 piece = doc.addObject('Part::Box', 'Piece')
@@ -53,14 +53,36 @@ class Previous:
 previous = Previous()
 gui._workbench_place_edit_dialog = previous
 gui.Selection.selected = [piece]
-commands['DIY_MovePart'].Activated()
+prefs = App.ParamGet('User parameter:BaseApp/History/Dragger')
+prior_angle = prefs.GetFloat('LastRotationIncrement', 5)
+prior_step = prefs.GetFloat('LastTranslationIncrement', 1)
+try:
+    prefs.SetFloat('LastRotationIncrement', 15)
+    prefs.SetFloat('LastTranslationIncrement', 2)
+    commands['DIY_MovePart'].Activated()
+    assert previous.closed and calls == [('Std_TransformManip', 0)]
+    assert gui.Selection.selected == [piece]
+    assert prefs.GetFloat('LastRotationIncrement') == 15
+    assert prefs.GetFloat('LastTranslationIncrement') == 2
+finally:
+    prefs.SetFloat('LastRotationIncrement', prior_angle)
+    prefs.SetFloat('LastTranslationIncrement', prior_step)
+commands['DIY_AutoMove'].Activated()
 move = gui._workbench_magnetic_move_dialog
-assert previous.closed and not calls
+assert calls == [('Std_TransformManip', 0)]
 assert gui.Selection.selected == []
 assert (move.source - App.Vector(500., 297., 372.)).Length < 1e-7, tuple(move.source)
 assert move.ghost_switch.whichChild.getValue() == coin.SO_SWITCH_ALL
 assert 'corner' not in move.message.text().lower()
 assert tuple(piece.Placement.Base) == (150., 250., 350.)
+# Returning to native handles must close the cursor preview first.
+gui.Selection.selected = [piece]
+commands['DIY_MovePart'].Activated()
+assert move.closed and view.callbacks == [] and view.scene.getNumChildren() == 0
+assert calls == [('Std_TransformManip', 0), ('Std_TransformManip', 0)]
+assert gui.Selection.selected == [piece]
+commands['DIY_AutoMove'].Activated()
+move = gui._workbench_magnetic_move_dialog
 gui.Selection.selected = [piece]
 commands['DIY_RotatePart'].Activated()
 assert move.closed and view.callbacks == []
@@ -105,4 +127,5 @@ dialog.rotate()
 assert 'no longer' in dialog.status.text().lower()
 dialog.close()
 assert not commands['DIY_MovePart'].IsActive()
-print('Move/rotate registration, selection errors, automatic Move pickup and preview, centre rotation on all axes, Undo, close/reopen and removed-part checks passed. No rendered GUI verification.')
+assert not commands['DIY_AutoMove'].IsActive()
+print('Move/rotate registration, selection errors, native Move handles and settings, separate Auto Move pickup and preview, centre rotation on all axes, Undo, close/reopen and removed-part checks passed. No rendered GUI verification.')
