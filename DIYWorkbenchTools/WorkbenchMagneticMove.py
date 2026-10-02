@@ -371,10 +371,19 @@ class MagneticMove:
         return App.ActiveDocument is not None
     def Activated(self):
         try:
-            part = selected_piece()
+            previous = getattr(Gui, '_workbench_magnetic_move_dialog', None)
+            prior_part = None
+            if previous is not None:
+                # Starting a session clears selection. Reentry can reuse its
+                # source only while the previous context is still valid.
+                if not previous.closed and previous.valid_context():
+                    prior_part = previous.part
+                previous.close()
+            part = (prior_part if not Gui.Selection.getSelection() and prior_part is not None
+                    else selected_piece())
             if not _independent(part):
                 raise ValueError('Choose an independent solid outside a Part or Body container.')
-            for name in ('_workbench_magnetic_move_dialog', '_workbench_place_edit_dialog',
+            for name in ('_workbench_place_edit_dialog',
                          '_workbench_corner_dialog', '_workbench_rotate_dialog'):
                 previous = getattr(Gui, name, None)
                 if previous is not None:

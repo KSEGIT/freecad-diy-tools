@@ -25,7 +25,8 @@ gui = types.ModuleType('FreeCADGui')
 gui.getMainWindow = lambda: None
 gui.activeDocument = lambda: types.SimpleNamespace(activeView=lambda: view, getInEdit=lambda: None)
 gui.activeWorkbench = lambda: types.SimpleNamespace(name=lambda: 'DIYWorkbench')
-gui.Selection = types.SimpleNamespace(clearSelection=lambda: None, getSelection=lambda: [piece])
+selection = []
+gui.Selection = types.SimpleNamespace(clearSelection=selection.clear, getSelection=lambda: list(selection))
 gui.addCommand = lambda *args: None
 sys.modules['FreeCADGui'] = gui
 
@@ -36,9 +37,13 @@ class MagneticTests(unittest.TestCase):
         self.docname = self.doc.Name
         piece = self.doc.addObject('Part::Box', 'Source'); self.doc.recompute()
         view = View()
+        selection[:] = [piece]
         self.dialog = module.MagneticMoveDialog(piece)
     def tearDown(self):
         self.dialog.close()
+        active = getattr(gui, '_workbench_magnetic_move_dialog', None)
+        if active is not None:
+            active.close()
         if self.docname in App.listDocuments():
             App.closeDocument(self.docname)
     def anchor(self):
@@ -204,7 +209,42 @@ class MagneticTests(unittest.TestCase):
         other = App.newDocument('OtherMagneticCheck')
         self.dialog.check_context(); self.assertTrue(self.dialog.closed)
         App.closeDocument(other.Name)
+    def test_reentry_with_empty_selection_reuses_valid_source_and_cleans_old_session(self):
+        self.assertEqual(selection, [])
+        gui._workbench_magnetic_move_dialog = self.dialog
+        notices = []
+        original_notice = QtWidgets.QMessageBox.information
+        try:
+            QtWidgets.QMessageBox.information = lambda *args: notices.append(str(args[-1]))
+            module.MagneticMove().Activated()
+            self.assertTrue(self.dialog.closed)
+            replacement = gui._workbench_magnetic_move_dialog
+            self.assertIsNotNone(replacement); self.assertIs(replacement.part, piece)
+            self.assertEqual(len(view.callbacks), 1); self.assertEqual(view.scene.getNumChildren(), 1)
+            self.assertEqual(notices, [])
+            self.assertEqual(tuple(piece.Placement.Base), (0., 0., 0.))
+            replacement.close()
+            self.assertEqual(view.callbacks, []); self.assertEqual(view.scene.getNumChildren(), 0)
+        finally:
+            QtWidgets.QMessageBox.information = original_notice
+    def test_reentry_with_invalid_source_closes_old_session_before_notice(self):
+        gui._workbench_magnetic_move_dialog = self.dialog
+        self.doc.removeObject(piece.Name)
+        notices = []
+        original_notice = QtWidgets.QMessageBox.information
+        try:
+            def notice(*args):
+                self.assertTrue(self.dialog.closed)
+                self.assertEqual(view.callbacks, []); self.assertEqual(view.scene.getNumChildren(), 0)
+                notices.append(str(args[-1]))
+            QtWidgets.QMessageBox.information = notice
+            module.MagneticMove().Activated()
+            self.assertEqual(len(notices), 1)
+            self.assertIsNone(gui._workbench_magnetic_move_dialog)
+        finally:
+            QtWidgets.QMessageBox.information = original_notice
     def test_reentry_closes_previous_session(self):
+        selection[:] = [piece]
         gui._workbench_magnetic_move_dialog = self.dialog
         module.MagneticMove().Activated()
         replacement = gui._workbench_magnetic_move_dialog
@@ -213,6 +253,11 @@ class MagneticTests(unittest.TestCase):
 if __name__ == '__main__':
     path = Path(__file__).resolve().parents[1] / 'DIYWorkbenchTools' / 'WorkbenchMagneticMove.py'
     assert path.exists(), 'Magnetic Move session is not implemented'
+    # FreeCAD adds installed Mod folders to sys.path while importing App.
+    # Restore this checkout first so helpers are tested from this branch.
+    sys.path.insert(0, str(path.parent))
+    for name in ('WorkbenchPlacement', 'WorkbenchMagneticGeometry', 'WorkbenchMagneticMove'):
+        sys.modules.pop(name, None)
     import WorkbenchMagneticMove as module
     # Visibility is view-provider state; headless FreeCAD has no ViewObjects.
     module._visible = lambda obj: view.visibility.get(obj.Name, True)
