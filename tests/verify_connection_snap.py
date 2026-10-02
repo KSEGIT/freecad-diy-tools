@@ -118,6 +118,75 @@ class ConnectionTests(unittest.TestCase):
         self.assertIsNone(self.snap((1730,0,0),previous=previous))
 
 
+    def test_explicit_target_intent_prevents_nearby_part_stealing(self):
+        side = Part.makeBox(1700,94,44,App.Vector(1800,105,10))
+        result = connection_snap(self.source,[('NearSide',side),('EndBeam',self.target)],
+            App.Vector(1702,10,10),lambda p:(p.x,p.y),
+            intent={'target_index':1,'point':App.Vector(1700,47,22),'component':'Face2',
+                    'source_pickup':App.Vector(0,47,22)})
+        self.assertIsNotNone(result)
+        self.assertEqual(result['label'],'EndBeam')
+        self.vector(result['delta'],(1700,0,0))
+
+    def test_release_radius_retains_joint_until_twenty_six_pixels(self):
+        previous = self.snap((1710,0,0))
+        retained = self.snap((1724,0,0),previous=previous)
+        self.assertIsNotNone(retained)
+        self.assertEqual(retained['key'],previous['key'])
+        self.assertIsNone(self.snap((1728,0,0),previous=previous))
+
+    def test_middle_grip_edge_intent_keeps_along_edge_position(self):
+        source = Part.makeBox(800,44,44,App.Vector(300,50,44))
+        target = Part.makeBox(1700,94,44)
+        edge_index = next(i for i,e in enumerate(target.Edges)
+                          if all(abs(v.Point.y-94)<1e-6 and abs(v.Point.z-44)<1e-6 for v in e.Vertexes))
+        result = self.snap((0,2,0),source=source,targets=[('Rail',target)],
+            intent={'target_index':0,'point':App.Vector(700,94,44),
+                    'component':'Edge'+str(edge_index+1),'source_pickup':App.Vector(700,94,44)})
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result['delta'].x,0,places=6)
+        self.assertAlmostEqual(result['delta'].y,0,places=6)
+
+    def test_explicit_intent_overrides_previous_other_target(self):
+        first = self.snap((1710,0,0))
+        second = Part.makeBox(1700,94,44,App.Vector(0,2,0))
+        result = self.snap((1710,2,0),targets=[('Beam',self.target),('Chosen',second)],
+            previous=first,intent={'target_index':1,'point':App.Vector(1700,49,22),
+                'component':'Face2','source_pickup':App.Vector(0,47,22)})
+        self.assertIsNotNone(result)
+        self.assertEqual(result['label'],'Chosen')
+
+    def test_intended_target_still_checks_other_collision_blockers(self):
+        blocker = Part.makeBox(100,94,44,App.Vector(1750,0,0))
+        result = self.snap((1710,0,0),targets=[('Beam',self.target),('Blocker',blocker)],
+            intent={'target_index':0,'point':App.Vector(1700,47,22),'component':'Face2',
+                    'source_pickup':App.Vector(0,47,22)})
+        self.assertIsNone(result)
+
+    def test_corner_pickup_matches_near_end_and_stays_stable_with_jitter(self):
+        vertex_index = next(i for i,v in enumerate(self.target.Vertexes)
+                            if (v.Point-App.Vector(1700,0,0)).Length < 1e-6)
+        intent = {'target_index':0,'point':App.Vector(1700,0,0),
+                  'component':'Vertex'+str(vertex_index+1),'source_pickup':App.Vector(0,0,0)}
+        previous = self.snap((1705,2,1),intent=intent)
+        self.assertIsNotNone(previous)
+        self.vector(previous['delta'],(1700,0,0))
+        for drift in (1,-1,2,-2):
+            result = self.snap((1705,drift,1),intent=intent,previous=previous)
+            self.assertIsNotNone(result)
+            self.assertEqual(result['key'],previous['key'])
+            self.vector(result['delta'],(1700,0,0))
+
+    def test_retained_nearby_joint_survives_competing_small_jitter(self):
+        source = Part.makeBox(100,10,10)
+        first = Part.makeBox(100,10,10,App.Vector(0,20,0))
+        second = Part.makeBox(100,10,10,App.Vector(0,21,0))
+        previous = self.snap((0,10,0),source=source,targets=[('First',first)])
+        result = self.snap((0,10.6,0),source=source,
+                           targets=[('First',first),('Second',second)],previous=previous)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['key'],previous['key'])
+
     def depth_case(self, perspective=False, blocker=False, axis=None):
         from pivy import coin
         camera = coin.SoPerspectiveCamera() if perspective else coin.SoOrthographicCamera()

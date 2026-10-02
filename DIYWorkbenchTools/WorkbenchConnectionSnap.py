@@ -32,18 +32,21 @@ def _faces(shape):
 
 def connection_snap(source_shape, target_shapes, raw_delta, project,
                     tolerance_px=18, world_tolerance=50, axis=None, previous=None,
-                    view_direction=None, depth_faces=None, excluded_keys=None):
+                    view_direction=None, depth_faces=None, excluded_keys=None, intent=None):
     """Return delta/contact points/label/kind/key for a nearby safe joint.
 
     ``target_shapes`` contains (label, world_shape) pairs. ``project`` maps a
     world vector to two pixel coordinates. ``source`` is before translation;
-    ``target`` is its proposed destination. ``previous`` provides small capture
-    hysteresis only for the same geometric connection, within the world limit.
+    ``target`` is its proposed destination. ``previous`` widens release by eight
+    pixels and favors the same connection, within the world limit.
     ``depth_faces`` maps ORIGINAL target-list indices to visible zero-based
     target face indices. These faces may resolve camera depth beyond the world
     radius, but lateral correction and screen capture remain limited.
     ``view_direction`` is a vector or callable(world_point) returning its camera
     ray direction. No depth inference occurs unless both arguments are supplied.
+    ``intent`` optionally restricts proposals to target_index and its visible
+    component (FaceN, EdgeN or VertexN). point and source_pickup rank nearby
+    connection features. All targets remain collision blockers.
     ``excluded_keys`` skips individual rejected connections, preserving all
     target solids as collision blockers and other contacts on those solids.
     """
@@ -51,6 +54,10 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
         raise ValueError('Unknown movement axis: {}'.format(axis))
     if tolerance_px <= 0 or world_tolerance <= 0 or source_shape.isNull():
         return None
+    intent = intent or {}
+    intended_index = intent.get('target_index')
+    aim = intent.get('point')
+    pickup = intent.get('source_pickup')
     depth_faces = depth_faces or {}
     excluded_keys = excluded_keys or set()
     def ray_direction(point):
@@ -95,7 +102,7 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
         end_px = project(destination)
         pixels = math.hypot(start_px[0]-end_px[0], start_px[1]-end_px[1])
         retained = previous is not None and previous.get('key') == identity
-        radius = tolerance_px + (2 if retained else 0)
+        radius = max(tolerance_px+8,26) if retained else tolerance_px
         if not math.isfinite(pixels) or pixels > radius:
             return
         delta = destination - point
@@ -108,12 +115,24 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
                   _PRIORITY[kind], distance) if depth else
                  (1, max(0, distance-bonus), _PRIORITY[kind],
                   max(0, pixels-(2 if retained else 0)), distance))
+        # Cursor intent ranks connection features near the held point and the
+        # visible destination feature. Keep correction as the primary limit;
+        # this affinity only resolves competing nearby connections.
+        if aim is not None and pickup is not None:
+            pp = project(pickup)
+            sp = project(point)
+            ap = project(aim)
+            dp = project(destination)
+            affinity = math.hypot(pp[0]-sp[0],pp[1]-sp[1]) + math.hypot(ap[0]-dp[0],ap[1]-dp[1])
+            score = (score[0],score[1]+min(affinity*.12,30)) + score[2:]
+        if retained:
+            score = (score[0],max(0,score[1]-8)) + score[2:]
         existing = candidates.get(delta_key)
         if existing is None or score < existing[0]:
             candidates[delta_key] = (score, {'delta': delta, 'source': App.Vector(point),
                 'target': App.Vector(destination), 'label': label, 'kind': kind,
                 'key': identity, 'depth': depth,
-                'target_face_index': identity[3] if depth else None}, faces)
+                'target_face_index': identity[3] if depth else None, 'pixels': pixels}, faces)
 
     def edge_flushes(source_face, target_face, base_delta, key, label, depth):
         # Align parallel finite face edges without pulling a mid-rail joint to
@@ -127,8 +146,16 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
             if source_direction.Length <= _EPS:
                 continue
             source_direction.normalize()
-            midpoint = (sa+sb)*.5
+            if pickup is None:
+                midpoint = (sa+sb)*.5
+            else:
+                along_pickup = max(0,min((sb-sa).Length,(pickup-sa).dot(source_direction)))
+                midpoint = sa+source_direction*along_pickup
             for tei, target_edge in enumerate(target_face.Edges):
+                if component.startswith('Edge') and feature is not None and not target_edge.isSame(feature):
+                    continue
+                if component.startswith('Vertex') and feature is not None and not any(v.isSame(feature) for v in target_edge.Vertexes):
+                    continue
                 if not isinstance(target_edge.Curve, Part.Line) or len(target_edge.Vertexes) != 2:
                     continue
                 ta, tb = (vertex.Point for vertex in target_edge.Vertexes)
@@ -147,8 +174,26 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
                         label, (source_face,target_face,False), depth)
 
     for target_index, label, target in targets:
+        if intended_index is not None and target_index != intended_index:
+            continue
         target_faces = _faces(target)
         target_min = min((f[1].Area for f in target_faces), default=0)
+        component = intent.get('component','') if target_index == intended_index else ''
+        feature = None
+        try:
+            if component.startswith('Face'):
+                feature = target.Faces[int(component[4:])-1]
+            elif component.startswith('Edge'):
+                feature = target.Edges[int(component[4:])-1]
+            elif component.startswith('Vertex'):
+                feature = target.Vertexes[int(component[6:])-1]
+        except (ValueError,IndexError):
+            feature = None
+        if feature is not None:
+            target_faces = [item for item in target_faces
+                            if item[1].isSame(feature) or
+                            any(edge.isSame(feature) for edge in item[1].Edges) or
+                            any(vertex.isSame(feature) for vertex in item[1].Vertexes)]
         for si, sf, sc, sn, sv in source_faces:
             for ti, tf, tc, tn, tv in target_faces:
                 if sn.dot(tn) > -1 + _EPS:
@@ -170,6 +215,8 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
                                 (sf,tf,True), True)
                     for svi, sp in enumerate(sv):
                         for tvi, tp in enumerate(tv):
+                            if feature is not None and component.startswith('Vertex') and (tp-feature.Point).Length > _EPS:
+                                continue
                             propose(sp, tp, 'flush', key+('depth_flush',svi,tvi), label,face_pair,True)
                 if abs(separation) > world_tolerance:
                     continue
@@ -186,11 +233,19 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
                             (sf, tf, True))
                 destination = sc + raw + sn*separation
                 propose(sc, destination, 'face', key+('face',), label, face_pair)
+                if intended_index is not None:
+                    edge_flushes(sf,tf,destination-sc,key,label,False)
                 # Face corners align the rail end with an upright's boundary,
                 # while finite face overlap and solid collision guard the joint.
                 for svi, sp in enumerate(sv):
                     for tvi, tp in enumerate(tv):
+                        if feature is not None and component.startswith('Vertex') and (tp-feature.Point).Length > _EPS:
+                            continue
                         propose(sp, tp, 'flush', key+('flush',svi,tvi), label, face_pair)
+        if feature is not None:
+            # Explicit planar intent must stay a finite face connection; a
+            # coincident lone vertex has no bearing area for a timber joint.
+            continue
         for si, vertex in enumerate(source_shape.Vertexes):
             sp = vertex.Point
             for ti, target_vertex in enumerate(target.Vertexes):
