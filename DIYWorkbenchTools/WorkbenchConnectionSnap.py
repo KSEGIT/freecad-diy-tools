@@ -104,7 +104,7 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
         # Across different joints, prefer smaller full world corrections.
         # The bounded bonus favors a sensible nearby extension or flush fit.
         bonus = {'extension': 8, 'flush': 4, 'face': 0, 'corner': 0}[kind]
-        score = ((0, max(0, pixels-(2 if retained else 0)), max(0,lateral-bonus),
+        score = ((0, max(0, pixels-(2 if retained else 0)-(4 if kind == "flush" else 0)), max(0,lateral-bonus),
                   _PRIORITY[kind], distance) if depth else
                  (1, max(0, distance-bonus), _PRIORITY[kind],
                   max(0, pixels-(2 if retained else 0)), distance))
@@ -114,6 +114,37 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
                 'target': App.Vector(destination), 'label': label, 'kind': kind,
                 'key': identity, 'depth': depth,
                 'target_face_index': identity[3] if depth else None}, faces)
+
+    def edge_flushes(source_face, target_face, base_delta, key, label, depth):
+        # Align parallel finite face edges without pulling a mid-rail joint to
+        # an endpoint. Start at the face-contact depth, then preserve distance
+        # along the destination edge's supporting line.
+        for sei, source_edge in enumerate(source_face.Edges):
+            if not isinstance(source_edge.Curve, Part.Line) or len(source_edge.Vertexes) != 2:
+                continue
+            sa, sb = (vertex.Point for vertex in source_edge.Vertexes)
+            source_direction = sb-sa
+            if source_direction.Length <= _EPS:
+                continue
+            source_direction.normalize()
+            midpoint = (sa+sb)*.5
+            for tei, target_edge in enumerate(target_face.Edges):
+                if not isinstance(target_edge.Curve, Part.Line) or len(target_edge.Vertexes) != 2:
+                    continue
+                ta, tb = (vertex.Point for vertex in target_edge.Vertexes)
+                direction = tb-ta
+                length = direction.Length
+                if length <= _EPS:
+                    continue
+                direction.normalize()
+                if abs(source_direction.dot(direction)) < 1-_EPS:
+                    continue
+                along = (midpoint+base_delta-ta).dot(direction)
+                if along < -_EPS or along > length+_EPS:
+                    continue
+                destination = ta+direction*along
+                propose(midpoint, destination, 'flush', key+('depth_edge' if depth else 'edge',sei,tei),
+                        label, (source_face,target_face,False), depth)
 
     for target_index, label, target in targets:
         target_faces = _faces(target)
@@ -132,6 +163,7 @@ def connection_snap(source_shape, target_shapes, raw_delta, project,
                     if abs(denominator) > _EPS:
                         destination = sc + raw + direction*(separation/denominator)
                         propose(sc, destination, 'face', key+('depth_face',), label, face_pair, True)
+                        edge_flushes(sf,tf,destination-sc,key,label,True)
                     if (abs(sf.Area-tf.Area) <= _EPS*max(1,sf.Area) and
                         sf.Area <= source_min*(1+_EPS) and tf.Area <= target_min*(1+_EPS)):
                         propose(sc, tc, 'extension', key+('depth_extension',), label,

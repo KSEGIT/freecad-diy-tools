@@ -188,6 +188,19 @@ class ConnectionTests(unittest.TestCase):
         if result is not None:
             self.assertLess(self.source.translated(result['delta']).common(blocker).Volume,1e-7)
 
+    def test_visible_parallel_edge_flush_preserves_midrail_position(self):
+        rail = Part.makeBox(1700,94,44)
+        top = next(i for i, face in enumerate(rail.Faces) if face.normalAt(0,0).z > .99)
+        for drift, expected in [(2,-2),(10,0)]:
+            upright = Part.makeBox(44,94,900,App.Vector(300,drift,44))
+            result = connection_snap(upright,[('Rail',rail)],App.Vector(),
+                                     lambda p:(p.x,p.y+p.z),
+                                     view_direction=App.Vector(1,1,1), depth_faces={0:{top}})
+            self.assertIsNotNone(result)
+            self.vector(result['delta'],(0,expected,0))
+            self.assertEqual(result['kind'],'flush' if expected else 'face')
+            self.assertLess(upright.translated(result['delta']).common(rail).Volume,1e-7)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
