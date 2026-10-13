@@ -2,11 +2,34 @@
 
 An independent FreeCAD add-on with a universal timber and plywood toolbar. The add-on lives in its own `DIYWorkbenchTools` folder; Woodworking updates do not replace these files.
 
-## Install on this Mac
+## Compatibility and distribution
 
-Save the model and close FreeCAD. Run `python3 install.py`, then reopen FreeCAD. **DIY tools** appears as the last row below the other top toolbars in every workbench. The default install folder is `~/Library/Application Support/FreeCAD/v1-1/Mod/DIYWorkbenchTools`. Use `--mod-root` to choose another FreeCAD profile.
+Version **0.6.2** targets **FreeCAD 1.1 or later**. Verification has used FreeCAD 1.1.3 on macOS; Windows, Linux and other FreeCAD versions are untested. Live mouse placement and OpenGL rendering still need manual checks on each platform.
 
-No workbench selection is needed. The original Woodworking add-on and other workbench files remain unchanged.
+This publication candidate is not listed in the public FreeCAD Addon Manager. Public release is pending the license and maintainer contact decisions. Use the manual installation below for an authorized local copy. See [publication status and checklist](docs/PUBLISHING.md) and [change history](CHANGELOG.md).
+
+## Install on macOS, Linux or Windows
+
+1. In FreeCAD, open **View → Panels → Python console** and run:
+
+   ```python
+   import FreeCAD
+   print(FreeCAD.getUserAppDataDir())
+   ```
+
+2. The printed folder is your active FreeCAD user data folder. Its `Mod` subfolder is the installation location. Save your model and close FreeCAD. Back up any existing `Mod/DIYWorkbenchTools` folder, including your custom tools.
+3. Extract the release ZIP or repository source archive. Copy its complete **`DIYWorkbenchTools` folder** into `Mod`. Keep that folder name and structure; `InitGui.py` must be at `Mod/DIYWorkbenchTools/InitGui.py`. Do not copy individual files directly into `Mod` or nest the whole source archive there.
+4. Reopen FreeCAD and select a workbench. **DIY tools** appears below the other top toolbars and stays available across workbench changes.
+
+Alternatively, from a complete checkout or extracted source archive, run:
+
+```sh
+python3 install.py --mod-root "/path/to/your/FreeCAD/user/data/Mod"
+```
+
+On Windows, use `py -3` if that is your Python command. Replace the example path with the `Mod` path found above. The installer overwrites matching `.py`, `.svg` and `.FCMacro` files in `DIYWorkbenchTools`; back up customizations first. It leaves unrelated files in that folder in place. Its default path is specific to macOS FreeCAD 1.1 (`~/Library/Application Support/FreeCAD/v1-1/Mod`), so use `--mod-root` for other profiles and platforms.
+
+No DIY workbench selection is needed. The original Woodworking add-on and other workbench files remain unchanged.
 
 ## Show or hide
 
@@ -25,9 +48,11 @@ Select one solid piece, then click **Auto Move** (blue cursor and green contact 
 
 Old and new independent solid objects are supported. Select one object in the model tree. Folders and spreadsheets are not movable parts. Objects nested inside a Part or Body container are not supported. Cut length editing is for rectangular `Part::Box` objects; other solids can move and rotate. Face alignment centres faces and can leave overlapping geometry. It does not create permanent assembly constraints.
 
-## Recover after an update
+## Update or remove
 
-Run `python3 install.py` again from this repository. The original standalone source copies in the parent DIY folder are also preserved. Keep custom tools in this add-on rather than editing Woodworking's `InitGui.py`.
+Back up your existing `Mod/DIYWorkbenchTools` folder before updating, then follow the installation steps again with the new version. Keep custom tools in this add-on rather than editing Woodworking's `InitGui.py`.
+
+To remove the add-on, close FreeCAD and move `Mod/DIYWorkbenchTools` outside `Mod`. Restart FreeCAD. Keep your backup until you are sure you no longer need it.
 
 ## Startup placeholder
 
@@ -43,9 +68,15 @@ On a fresh start in FreeCAD’s **<none>** placeholder, choose any workbench fir
 - [Builder Depot 3×2 PAR](https://www.builderdepot.co.uk/50mm-x-75mm-planed-softwood-par-timber-3in-x-2in)
 - [Builder Depot 3×4 PAR](https://www.builderdepot.co.uk/75mm-x-100mm-planed-softwood-par-timber-4in-x-3in)
 
+## Addon Manager custom source (after public release)
+
+FreeCAD supports [repository-reference distribution](https://freecad.github.io/Addon-Academy/Guides/Publishing/Reference/) without an official Index listing. Once this repository is public, add `https://github.com/KSEGIT/freecad-diy-tools` to Addon Manager's custom repository settings. Select the released branch or tag rather than an older default-branch version. This publication candidate uses `codex/publish-diy-tools`; use manual installation if your Addon Manager does not offer that branch. Back up the existing manual installation first and avoid loading two copies. Custom-source installation has not yet been verified in this release review.
+
 ## Addon Manager package
 
-`package.xml` describes this independent toolbar add-on. FreeCAD 1.1 loads the nested `InitGui.py` through its workbench content loader, but the extension registers no selectable workbench. The repository is private and is not in the public Addon Manager list. Public distribution would need a license choice, maintainer contact, and listing review. The installer works now without that listing.
+`package.xml` describes this independent toolbar add-on. FreeCAD 1.1 loads the nested `InitGui.py` through its workbench content loader, but the extension registers no selectable workbench. This loader workaround is intentional. The manifest lacks a workbench class, and the add-on creates global toolbar/menu actions and changes `sys.path`; these need review against current Addon Index requirements before a listing request.
+
+The package currently declares `UNLICENSED`. A license choice and public maintainer contact are still needed before public distribution. See [publication status](docs/PUBLISHING.md) for the remaining steps.
 
 ## Design references
 
