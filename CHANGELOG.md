@@ -1,10 +1,11 @@
 # Changelog
 
-## 0.6.2 — publication candidate, 2026-10-13
+## 0.6.2 — 2026-10-13
 
 - Include the local frame-end snapping fix developed on 2026-10-02: Auto Move can close nearby frame ends when a part is held from a middle grip, without jumping to a distant end. Add lifecycle checks for this behavior (`0065a95`, recovered into the publication branch).
 - Add manual installation and update instructions for macOS, Linux and Windows, with a warning to back up local customizations.
 - Document compatibility limits and the remaining FreeCAD Addon Index publication requirements.
+- Add the MIT License and public maintainer contact; pin package metadata and installation guidance to release tag `v0.6.2`.
 
 ## 0.6.1 — 2026-10-02
 

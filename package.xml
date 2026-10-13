@@ -4,10 +4,10 @@
   <description>Independent timber and plywood tools with magnetic placement, measurements, cut sizing and rotation.</description>
   <version>0.6.2</version>
   <date>2026-10-13</date>
-  <maintainer>KSEGIT</maintainer>
-  <license>UNLICENSED</license>
-  <url type="repository" branch="codex/publish-diy-tools">https://github.com/KSEGIT/freecad-diy-tools</url>
-  <url type="readme">https://github.com/KSEGIT/freecad-diy-tools/raw/codex/publish-diy-tools/README.md</url>
+  <maintainer email="9919062+KSEGIT@users.noreply.github.com">KSEGIT</maintainer>
+  <license file="LICENSE">MIT</license>
+  <url type="repository" branch="v0.6.2">https://github.com/KSEGIT/freecad-diy-tools</url>
+  <url type="readme">https://github.com/KSEGIT/freecad-diy-tools/raw/v0.6.2/README.md</url>
   <url type="bugtracker">https://github.com/KSEGIT/freecad-diy-tools/issues</url>
   <freecadmin>1.1.0</freecadmin>
   <tag>woodworking</tag>

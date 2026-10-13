@@ -1,12 +1,12 @@
 # Publication status and checklist
 
-Status checked on **2026-10-13** for publication candidate **0.6.2**. Public release is pending license, maintainer contact and visibility decisions. The add-on is not listed in the public FreeCAD Addon Manager. Preparing a release branch, tag or ZIP does not establish an Index listing.
+Status checked on **2026-10-13** for release **0.6.2**. The owner approved the MIT License, public repository visibility and the GitHub noreply maintainer address. Release metadata is pinned to **`v0.6.2`**. The add-on is not listed in the official FreeCAD Addon Index. A GitHub release or custom repository source does not establish an Index listing.
 
-## Decisions required before public distribution
+## Approved publication choices
 
-- [ ] Confirm the license and the rights to distribute all code, icons and other resources. The current metadata declares `UNLICENSED`; there is no chosen public distribution license. Add the license text and keep its SPDX identifier consistent in `package.xml` and applicable file headers.
-- [ ] Choose a public maintainer email and add it to `package.xml`. Do not infer permission to publish an address from Git commit authorship.
-- [ ] Confirm the intended repository visibility before making a private repository public.
+- [x] The owner selected the [MIT License](../LICENSE) for public distribution. `package.xml` declares `MIT` and points to `LICENSE`.
+- [x] The owner approved the public GitHub noreply maintainer email: `9919062+KSEGIT@users.noreply.github.com`.
+- [x] The owner approved making `KSEGIT/freecad-diy-tools` public.
 
 ## FreeCAD Addon Index blockers
 
@@ -14,7 +14,7 @@ The current [Index quality requirements](https://freecad.github.io/Addon-Academy
 
 The same requirements and the [manifest reference](https://freecad.github.io/Addon-Academy/Topics/Structuring/Manifest/) need these checks:
 
-- [ ] Resolve the missing license and maintainer contact above.
+- [x] Add the approved license and maintainer contact above.
 - [ ] Resolve the global toolbar and menu design: current Index rules require UI effects to stay in the add-on's own workbench. DIY tools intentionally remain visible across workbenches.
 - [ ] Resolve startup `sys.path` changes in `DIYWorkbenchTools/InitGui.py`; the Index rules disallow them even in the legacy layout.
 - [ ] Review the intentional workbench-content loader workaround. The current manifest names a workbench content item but supplies no `<classname>` and registers no selectable workbench. Do not add a fictitious class just to satisfy metadata checks. Agree a compliant content/load design with the FreeCAD maintainers or implement and test a real workbench design.
@@ -27,14 +27,14 @@ The same requirements and the [manifest reference](https://freecad.github.io/Add
 - [ ] Review the branch diff and run the applicable unit, FreeCAD geometry and Qt checks listed in the README. Record any manual checks that remain incomplete.
 - [ ] Confirm `package.xml`, changelog and tag agree on **0.6.2**, and set the metadata release date to **2026-10-13** when that version is published.
 - [ ] Push the reviewed branch and open a pull request. Do not push directly to the default branch.
-- [ ] Before merging or publishing from a stable branch, change the `package.xml` repository `branch` and README URL to that stable branch or release tag. They currently point to the preparation branch `codex/publish-diy-tools`; do not delete that remote branch while its manifest is used.
+- [x] Pin the `package.xml` repository `branch` and README URL to release tag `v0.6.2`, so they do not depend on the preparation branch.
 - [ ] After approval and integration, tag the reviewed release commit as `v0.6.2` and publish release notes and a ZIP. If releasing a reviewed branch before integration, state that branch and commit clearly.
 - [ ] Keep the ZIP's `DIYWorkbenchTools/` directory intact. Include `package.xml`, README, changelog and the chosen license at the archive root. Manual users copy only `DIYWorkbenchTools` into their user data `Mod` directory.
 - [ ] Test extraction and installation in a temporary `Mod` directory before attaching the ZIP. Confirm `DIYWorkbenchTools/InitGui.py` exists after installation.
 
 ## Custom repository source
 
-After license and visibility approval, publish the reviewed repository and share its URL through the [official Reference channel](https://freecad.github.io/Addon-Academy/Guides/Publishing/Reference/). This route supports Addon Manager updates without an Index listing. Confirm that users select the released branch or tag; until the pull request is integrated, `main` remains at 0.6.1. Verify custom-source installation in a separate profile before claiming it is tested.
+Publish the approved reviewed repository and share its URL through the [official Reference channel](https://freecad.github.io/Addon-Academy/Guides/Publishing/Reference/). This route supports Addon Manager updates without an Index listing. Users must select release tag `v0.6.2` for this exact release. Before the release pull request is merged, `main` is at 0.6.1; after integration it includes 0.6.2. The [GitHub release](https://github.com/KSEGIT/freecad-diy-tools/releases/tag/v0.6.2) provides a ZIP for manual installation. Verify custom-source installation in a separate profile before claiming it is tested.
 
 ## Index submission after blockers are resolved
 

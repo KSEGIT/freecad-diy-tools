@@ -6,7 +6,7 @@ An independent FreeCAD add-on with a universal timber and plywood toolbar. The a
 
 Version **0.6.2** targets **FreeCAD 1.1 or later**. Verification has used FreeCAD 1.1.3 on macOS; Windows, Linux and other FreeCAD versions are untested. Live mouse placement and OpenGL rendering still need manual checks on each platform.
 
-This publication candidate is not listed in the public FreeCAD Addon Manager. Public release is pending the license and maintainer contact decisions. Use the manual installation below for an authorized local copy. See [publication status and checklist](docs/PUBLISHING.md) and [change history](CHANGELOG.md).
+Get **0.6.2** from the [GitHub release](https://github.com/KSEGIT/freecad-diy-tools/releases/tag/v0.6.2). The add-on is distributed under the [MIT License](LICENSE). It is not listed in the official FreeCAD Addon Index. Use the manual installation below, or add the released tag as a custom Addon Manager source. See [publication status and checklist](docs/PUBLISHING.md) and [change history](CHANGELOG.md).
 
 ## Install on macOS, Linux or Windows
 
@@ -68,15 +68,15 @@ On a fresh start in FreeCAD’s **<none>** placeholder, choose any workbench fir
 - [Builder Depot 3×2 PAR](https://www.builderdepot.co.uk/50mm-x-75mm-planed-softwood-par-timber-3in-x-2in)
 - [Builder Depot 3×4 PAR](https://www.builderdepot.co.uk/75mm-x-100mm-planed-softwood-par-timber-4in-x-3in)
 
-## Addon Manager custom source (after public release)
+## Addon Manager custom source
 
-FreeCAD supports [repository-reference distribution](https://freecad.github.io/Addon-Academy/Guides/Publishing/Reference/) without an official Index listing. Once this repository is public, add `https://github.com/KSEGIT/freecad-diy-tools` to Addon Manager's custom repository settings. Select the released branch or tag rather than an older default-branch version. This publication candidate uses `codex/publish-diy-tools`; use manual installation if your Addon Manager does not offer that branch. Back up the existing manual installation first and avoid loading two copies. Custom-source installation has not yet been verified in this release review.
+FreeCAD supports [repository-reference distribution](https://freecad.github.io/Addon-Academy/Guides/Publishing/Reference/) without an official Index listing. Add `https://github.com/KSEGIT/freecad-diy-tools` to Addon Manager's custom repository settings and select tag **`v0.6.2`**. Before the release pull request is merged, `main` is at 0.6.1; after integration it includes 0.6.2. Selecting the tag keeps installation pinned to this release. Use manual installation if your Addon Manager does not offer tag selection. Back up the existing manual installation first and avoid loading two copies. Custom-source installation has not yet been verified in this release review.
 
 ## Addon Manager package
 
 `package.xml` describes this independent toolbar add-on. FreeCAD 1.1 loads the nested `InitGui.py` through its workbench content loader, but the extension registers no selectable workbench. This loader workaround is intentional. The manifest lacks a workbench class, and the add-on creates global toolbar/menu actions and changes `sys.path`; these need review against current Addon Index requirements before a listing request.
 
-The package currently declares `UNLICENSED`. A license choice and public maintainer contact are still needed before public distribution. See [publication status](docs/PUBLISHING.md) for the remaining steps.
+The package declares the [MIT License](LICENSE) and points to release tag `v0.6.2`. Maintainer: [KSEGIT](https://github.com/KSEGIT), [9919062+KSEGIT@users.noreply.github.com](mailto:9919062+KSEGIT@users.noreply.github.com). Use [GitHub issues](https://github.com/KSEGIT/freecad-diy-tools/issues) for support and bug reports. See [publication status](docs/PUBLISHING.md) for the remaining Index steps.
 
 ## Design references
 
